@@ -14,24 +14,56 @@ export default function TimbreSpaceVisualizer() {
   const controlsRef = useRef<any>()
   const [controlsEnabled, setControlsEnabled] = useState(true)
   const [webglContextLost, setWebglContextLost] = useState(false)
-  const [canvasKey, setCanvasKey] = useState(0)
+  const [contextReady, setContextReady] = useState(false)
+  const canvasRef = useRef<HTMLCanvasElement | null>(null)
 
   const handleContextLost = (event: Event) => {
-    event.preventDefault()
-    console.warn("[v0] WebGL context lost - attempting recovery...")
-    setWebglContextLost(true)
+    const webglEvent = event as WebGLContextEvent
+    // Only handle if context is actually lost (not during initialization)
+    if (contextReady && webglEvent.preventDefault) {
+      webglEvent.preventDefault()
+      console.warn("[v0] WebGL context lost - attempting recovery...")
+      setWebglContextLost(true)
+      setContextReady(false) // Mark context as not ready when lost
+    } else {
+      // During initialization, don't show the error message
+      if (webglEvent.preventDefault) {
+        webglEvent.preventDefault()
+      }
+      // Silently handle - context will be validated in onCreated
+    }
   }
 
   const handleContextRestored = () => {
     console.log("[v0] WebGL context restored")
     setWebglContextLost(false)
-    // Force re-render by updating key
-    setCanvasKey((prev) => prev + 1)
+    // Re-validate context and mark as ready
+    if (canvasRef.current) {
+      const context = canvasRef.current.getContext("webgl2") || 
+                     canvasRef.current.getContext("webgl") || 
+                     canvasRef.current.getContext("experimental-webgl")
+      if (context && "getContextAttributes" in context) {
+        try {
+          const attrs = context.getContextAttributes()
+          if (attrs) {
+            setContextReady(true)
+          }
+        } catch (e) {
+          console.warn("[v0] Error validating context attributes:", e)
+        }
+      }
+    }
   }
 
   useEffect(() => {
     return () => {
-      // Cleanup if needed
+      // Cleanup event listeners if canvas still exists
+      if (canvasRef.current) {
+        canvasRef.current.removeEventListener("webglcontextlost", handleContextLost)
+        canvasRef.current.removeEventListener("webglcontextrestored", handleContextRestored)
+        canvasRef.current.removeEventListener("contextlost", handleContextLost)
+        canvasRef.current.removeEventListener("contextrestored", handleContextRestored)
+      }
     }
   }, [])
 
@@ -46,17 +78,79 @@ export default function TimbreSpaceVisualizer() {
         </div>
       )}
       <Canvas
-        key={canvasKey}
         camera={{ position: [8, 6, 8], fov: 60 }}
-        gl={{ antialias: true, alpha: false }}
+        gl={{ 
+          antialias: true, 
+          alpha: false,
+          preserveDrawingBuffer: false,
+          failIfMajorPerformanceCaveat: false,
+        }}
         onCreated={({ gl }) => {
-          const canvas = gl.domElement
-          canvas.addEventListener("webglcontextlost", handleContextLost)
-          canvas.addEventListener("webglcontextrestored", handleContextRestored)
+          if (!gl || !gl.domElement) {
+            console.warn("[v0] WebGL renderer not properly initialized")
+            return
+          }
           
-          // Also handle WebGL2 context events
-          canvas.addEventListener("contextlost", handleContextLost)
-          canvas.addEventListener("contextrestored", handleContextRestored)
+          // Use setTimeout to ensure context is fully initialized
+          // This prevents EffectComposer from accessing context before it's ready
+          setTimeout(() => {
+            try {
+              const canvas = gl.domElement
+              canvasRef.current = canvas
+              
+              // Try to get context from renderer first (react-three/fiber way)
+              let context: WebGLRenderingContext | WebGL2RenderingContext | null = null
+              try {
+                // react-three/fiber's gl.getContext() method
+                context = (gl as any).getContext() || 
+                         canvas.getContext("webgl2") || 
+                         canvas.getContext("webgl") || 
+                         canvas.getContext("experimental-webgl")
+              } catch (e) {
+                // Fallback to canvas.getContext
+                context = canvas.getContext("webgl2") || 
+                         canvas.getContext("webgl") || 
+                         canvas.getContext("experimental-webgl")
+              }
+              
+              if (context) {
+                // Validate that getContextAttributes() works before marking as ready
+                // This is what EffectComposer will try to access
+                if (typeof context.getContextAttributes === "function") {
+                  try {
+                    const attrs = context.getContextAttributes()
+                    if (attrs && typeof attrs.alpha !== "undefined") {
+                      // Context is valid and accessible
+                      setContextReady(true)
+                      
+                      // Add context loss/restore listeners only after validation
+                      canvas.addEventListener("webglcontextlost", handleContextLost, { once: false })
+                      canvas.addEventListener("webglcontextrestored", handleContextRestored, { once: false })
+                      
+                      // Also handle WebGL2 context events (these fire for both WebGL1 and WebGL2)
+                      canvas.addEventListener("contextlost", handleContextLost, { once: false })
+                      canvas.addEventListener("contextrestored", handleContextRestored, { once: false })
+                    }
+                  } catch (attrError) {
+                    console.warn("[v0] Error accessing context attributes:", attrError)
+                    // Retry after a short delay
+                    setTimeout(() => {
+                      try {
+                        const attrs = context?.getContextAttributes()
+                        if (attrs && typeof attrs.alpha !== "undefined") {
+                          setContextReady(true)
+                        }
+                      } catch (e) {
+                        console.warn("[v0] Retry failed:", e)
+                      }
+                    }, 100)
+                  }
+                }
+              }
+            } catch (error) {
+              console.warn("[v0] Error accessing WebGL context:", error)
+            }
+          }, 0)
         }}
         onPointerMissed={() => {
           setControlsEnabled(true)
@@ -105,10 +199,12 @@ export default function TimbreSpaceVisualizer() {
         maxDistance={20}
       />
 
-      {/* Post-processing effects */}
-      <EffectComposer>
-        <Bloom intensity={1.2} luminanceThreshold={0.3} luminanceSmoothing={0.9} />
-      </EffectComposer>
+      {/* Post-processing effects - only render when context is ready */}
+      {contextReady && (
+        <EffectComposer>
+          <Bloom intensity={1.2} luminanceThreshold={0.3} luminanceSmoothing={0.9} />
+        </EffectComposer>
+      )}
     </Canvas>
     </div>
   )

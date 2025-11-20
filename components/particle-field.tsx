@@ -302,29 +302,38 @@ export default function ParticleField() {
         intensity /= maxBin - minBin
       }
 
-      // Vocal Gating Logic
+      // Vocal Gating Logic - with lookahead to fix 1 second delay
       if (particle.name === "Vocal" && lyricsData.length > 0 && isPlaying) {
-        // Check if current time is within any lyric timestamp window
-        // Assuming lyricsData has time (seconds) and we approximate duration based on text length or next lyric
-        // If word-level timings exist, use those for precise gating
-        
         let isSinging = false
         
-        // Check recent lyrics to find if we are in a singing window
-        // Default "window" of 3 seconds per line if no end time known
-        const currentLyric = lyricsData.find(l => 
-          l.time <= currentTime && currentTime < l.time + 3 // 3 second window fallback
-        )
+        // Add small lookahead buffer (0.1s) to account for timing precision
+        const lookaheadTime = currentTime + 0.1
+        
+        // Find the current lyric entry
+        const currentLyricIndex = lyricsData.findIndex(l => l.time <= lookaheadTime)
+        const currentLyric = currentLyricIndex >= 0 ? lyricsData[currentLyricIndex] : null
+        const nextLyric = currentLyricIndex >= 0 && currentLyricIndex < lyricsData.length - 1 
+          ? lyricsData[currentLyricIndex + 1] 
+          : null
         
         if (currentLyric) {
           if (currentLyric.words && currentLyric.words.length > 0) {
-            // Precise word-level checking
-             isSinging = currentLyric.words.some(w => 
-               w.start <= currentTime && w.end >= currentTime
-             )
+            // Precise word-level checking with lookahead
+            isSinging = currentLyric.words.some(w => 
+              w.start <= lookaheadTime && w.end >= currentTime
+            )
+            
+            // If no word matches but we're close to a word start, check ahead
+            if (!isSinging) {
+              // Check if we're within 0.2s of any word start
+              isSinging = currentLyric.words.some(w => 
+                w.start <= lookaheadTime + 0.2 && w.start >= currentTime - 0.1
+              )
+            }
           } else {
-             // Line-level fallback
-             isSinging = true
+            // Line-level fallback - use next lyric's time or estimate 2 seconds
+            const lyricEndTime = nextLyric ? nextLyric.time : (currentLyric.time + 2)
+            isSinging = lookaheadTime >= currentLyric.time && currentTime < lyricEndTime
           }
         }
         
