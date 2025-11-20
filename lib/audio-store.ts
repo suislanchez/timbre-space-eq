@@ -390,11 +390,8 @@ export const useAudioStore = create<AudioStore>((set, get) => ({
   initAudio: () => {
     if (typeof window === "undefined") return
 
-    const audioContext = new AudioContext()
-    const analyser = audioContext.createAnalyser()
-    analyser.fftSize = 2048
-    analyser.smoothingTimeConstant = 0.8
-
+    // Don't create AudioContext here - it requires user gesture
+    // Just initialize the audio element and event listeners
     const audioElement = new Audio()
     audioElement.crossOrigin = "anonymous"
 
@@ -417,38 +414,64 @@ export const useAudioStore = create<AudioStore>((set, get) => ({
       set({ duration: audioElement.duration || 0 })
     })
 
-    const source = audioContext.createMediaElementSource(audioElement)
-    const gainNode = audioContext.createGain()
-    gainNode.gain.value = 0.7
-
-    // Create EQ filters
-    const frequencies = [60, 250, 1000, 3000, 8000]
-    const eqFilters = frequencies.map((freq) => {
-      const filter = audioContext.createBiquadFilter()
-      filter.type = "peaking"
-      filter.frequency.value = freq
-      filter.Q.value = 1
-      filter.gain.value = 0
-      return filter
+    set({
+      audioElement,
     })
+  },
 
-    // Connect audio graph
-    source.connect(eqFilters[0])
-    for (let i = 0; i < eqFilters.length - 1; i++) {
-      eqFilters[i].connect(eqFilters[i + 1])
-    }
-    eqFilters[eqFilters.length - 1].connect(gainNode)
-    gainNode.connect(analyser)
-    analyser.connect(audioContext.destination)
+  ensureAudioContext: async () => {
+    if (typeof window === "undefined") return Promise.resolve()
 
-    const frequencyData = new Uint8Array(analyser.frequencyBinCount)
-    const timeData = new Uint8Array(analyser.frequencyBinCount)
+    let { audioContext, audioElement, analyser, source, eqFilters } = get()
 
-    const updateData = () => {
-      analyser.getByteFrequencyData(frequencyData)
-      analyser.getByteTimeDomainData(timeData)
+    // If AudioContext doesn't exist, create it (lazy initialization on user gesture)
+    if (!audioContext) {
+      audioContext = new AudioContext()
+      analyser = audioContext.createAnalyser()
+      analyser.fftSize = 2048
+      analyser.smoothingTimeConstant = 0.8
 
-      const sampleRate = audioContext.sampleRate
+      if (!audioElement) {
+        audioElement = new Audio()
+        audioElement.crossOrigin = "anonymous"
+      }
+
+      source = audioContext.createMediaElementSource(audioElement)
+      const gainNode = audioContext.createGain()
+      gainNode.gain.value = 0.7
+
+      // Create EQ filters with current settings
+      const { eqSettings } = get()
+      const frequencies = [60, 250, 1000, 3000, 8000]
+      const eqBands: (keyof AudioStore["eqSettings"])[] = ["low", "lowMid", "mid", "highMid", "high"]
+      eqFilters = frequencies.map((freq, index) => {
+        const filter = audioContext!.createBiquadFilter()
+        filter.type = "peaking"
+        filter.frequency.value = freq
+        filter.Q.value = 1
+        filter.gain.value = eqSettings[eqBands[index]] || 0
+        return filter
+      })
+
+      // Connect audio graph
+      source.connect(eqFilters[0])
+      for (let i = 0; i < eqFilters.length - 1; i++) {
+        eqFilters[i].connect(eqFilters[i + 1])
+      }
+      eqFilters[eqFilters.length - 1].connect(gainNode)
+      gainNode.connect(analyser)
+      analyser.connect(audioContext.destination)
+
+      const frequencyData = new Uint8Array(analyser.frequencyBinCount)
+      const timeData = new Uint8Array(analyser.frequencyBinCount)
+
+      const updateData = () => {
+        if (!analyser || !audioContext) return
+
+        analyser.getByteFrequencyData(frequencyData)
+        analyser.getByteTimeDomainData(timeData)
+
+        const sampleRate = audioContext.sampleRate
       const spectralCentroid = calculateSpectralCentroid(frequencyData, sampleRate)
 
       const rhythmMetrics = calculateRhythmMetrics(timeData, frequencyData)
@@ -616,31 +639,45 @@ export const useAudioStore = create<AudioStore>((set, get) => ({
         }
       }
 
+        set({
+          frequencyData: new Uint8Array(frequencyData),
+          timeData: new Uint8Array(timeData),
+          spectralCentroid,
+          rhythmMetrics, // Update rhythm metrics
+        })
+
+        requestAnimationFrame(updateData)
+      }
+      updateData()
+
       set({
-        frequencyData: new Uint8Array(frequencyData),
-        timeData: new Uint8Array(timeData),
-        spectralCentroid,
-        rhythmMetrics, // Update rhythm metrics
+        audioContext,
+        analyser,
+        audioElement,
+        source,
+        frequencyData,
+        timeData,
+        eqFilters,
       })
-
-      requestAnimationFrame(updateData)
     }
-    updateData()
 
-    set({
-      audioContext,
-      analyser,
-      audioElement,
-      source,
-      frequencyData,
-      timeData,
-      eqFilters,
-    })
+    // Resume AudioContext if suspended
+    if (audioContext.state === "suspended") {
+      await audioContext.resume()
+    }
+
+    return Promise.resolve()
   },
 
-  togglePlayback: () => {
+  togglePlayback: async () => {
+    // Ensure AudioContext is created/resumed (requires user gesture)
+    await get().ensureAudioContext()
+
     const { audioElement, audioContext, isPlaying } = get()
-    if (!audioElement || !audioContext) return
+    if (!audioElement || !audioContext) {
+      console.warn("[v0] AudioContext not initialized. This should not happen.")
+      return
+    }
 
     if (!audioElement.src || audioElement.src === "") {
       console.warn("[v0] No audio file loaded. Please upload a file first.")
@@ -648,7 +685,7 @@ export const useAudioStore = create<AudioStore>((set, get) => ({
     }
 
     if (audioContext.state === "suspended") {
-      audioContext.resume()
+      await audioContext.resume()
     }
 
     if (isPlaying) {

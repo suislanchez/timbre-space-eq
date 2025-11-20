@@ -7,21 +7,62 @@ import ParticleField from "./particle-field"
 import AxisLabels from "./axis-labels"
 import SpectralOverlay from "./spectral-overlay"
 import { useAudioStore } from "@/lib/audio-store"
-import { useRef, useState } from "react"
+import { useRef, useState, useEffect } from "react"
 
 export default function TimbreSpaceVisualizer() {
   const showSpectralOverlay = useAudioStore((state) => state.showSpectralOverlay)
   const controlsRef = useRef<any>()
   const [controlsEnabled, setControlsEnabled] = useState(true)
+  const [webglContextLost, setWebglContextLost] = useState(false)
+  const [canvasKey, setCanvasKey] = useState(0)
+
+  const handleContextLost = (event: Event) => {
+    event.preventDefault()
+    console.warn("[v0] WebGL context lost - attempting recovery...")
+    setWebglContextLost(true)
+  }
+
+  const handleContextRestored = () => {
+    console.log("[v0] WebGL context restored")
+    setWebglContextLost(false)
+    // Force re-render by updating key
+    setCanvasKey((prev) => prev + 1)
+  }
+
+  useEffect(() => {
+    return () => {
+      // Cleanup if needed
+    }
+  }, [])
 
   return (
-    <Canvas
-      camera={{ position: [8, 6, 8], fov: 60 }}
-      gl={{ antialias: true, alpha: false }}
-      onPointerMissed={() => {
-        setControlsEnabled(true)
-      }}
-    >
+    <div className="w-full h-full absolute inset-0">
+      {webglContextLost && (
+        <div className="absolute inset-0 flex items-center justify-center bg-background/90 z-50">
+          <div className="text-center p-4">
+            <p className="text-foreground mb-2">WebGL context lost</p>
+            <p className="text-muted-foreground text-sm">The 3D visualization will resume automatically...</p>
+          </div>
+        </div>
+      )}
+      <Canvas
+        key={canvasKey}
+        camera={{ position: [8, 6, 8], fov: 60 }}
+        gl={{ antialias: true, alpha: false }}
+        onCreated={({ gl }) => {
+          const canvas = gl.domElement
+          canvas.addEventListener("webglcontextlost", handleContextLost)
+          canvas.addEventListener("webglcontextrestored", handleContextRestored)
+          
+          // Also handle WebGL2 context events
+          canvas.addEventListener("contextlost", handleContextLost)
+          canvas.addEventListener("contextrestored", handleContextRestored)
+        }}
+        onPointerMissed={() => {
+          setControlsEnabled(true)
+        }}
+        style={{ width: "100%", height: "100%" }}
+      >
       {/* Lighting */}
       <ambientLight intensity={0.2} />
       <pointLight position={[10, 10, 10]} intensity={0.5} />
@@ -69,5 +110,6 @@ export default function TimbreSpaceVisualizer() {
         <Bloom intensity={1.2} luminanceThreshold={0.3} luminanceSmoothing={0.9} />
       </EffectComposer>
     </Canvas>
+    </div>
   )
 }
