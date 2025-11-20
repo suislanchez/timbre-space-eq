@@ -95,9 +95,19 @@ export default function ParticleField() {
   const manualOffsetsRef = useRef<Array<THREE.Vector3>>([])
   const dragPlaneRef = useRef<THREE.Plane>(new THREE.Plane(new THREE.Vector3(0, 0, 1), 0))
   const dragOffsetRef = useRef<THREE.Vector3>(new THREE.Vector3())
+  const heldKeys = useRef<Set<string>>(new Set())
 
-  const { frequencyData, isPlaying, showTrails, isolatedInstrument, showClusters, updateEQ, dynamicParticles } =
-    useAudioStore()
+  const {
+    frequencyData,
+    isPlaying,
+    showTrails,
+    isolatedInstrument,
+    showClusters,
+    updateEQ,
+    dynamicParticles,
+    lyricsData,
+    currentTime,
+  } = useAudioStore()
   const { camera, raycaster, gl } = useThree()
 
   useEffect(() => {
@@ -159,74 +169,26 @@ export default function ParticleField() {
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
-      if (selectedIndex === null) return
+      heldKeys.current.add(event.key)
 
-      const mesh = meshRefs.current[selectedIndex]
-      if (!mesh) return
-
-      const moveSpeed = 0.1
-      const manualOffset = manualOffsetsRef.current[selectedIndex]
-      if (!manualOffset) {
-        console.warn(`[v0] No manual offset for particle ${selectedIndex}`)
-        return
+      if (event.key === "Escape") {
+        setSelectedIndex(null)
+        heldKeys.current.clear()
       }
+    }
 
-      switch (event.key) {
-        case "ArrowUp":
-          manualOffset.y += moveSpeed
-          break
-        case "ArrowDown":
-          manualOffset.y -= moveSpeed
-          break
-        case "ArrowLeft":
-          manualOffset.x -= moveSpeed
-          break
-        case "ArrowRight":
-          manualOffset.x += moveSpeed
-          break
-        case "PageUp":
-        case "w":
-        case "W":
-          manualOffset.z += moveSpeed
-          break
-        case "PageDown":
-        case "s":
-        case "S":
-          manualOffset.z -= moveSpeed
-          break
-        case "Escape":
-          setSelectedIndex(null)
-          console.log(`[v0] Deselected ${allParticles[selectedIndex].name}`)
-          return
-        default:
-          return
-      }
-
-      event.preventDefault()
-
-      const xGain = THREE.MathUtils.clamp(manualOffset.x * 1.5, -12, 12)
-      const yGain = THREE.MathUtils.clamp(manualOffset.y * 1.5, -12, 12)
-      const zGain = THREE.MathUtils.clamp(manualOffset.z * 1.5, -12, 12)
-
-      const particle = allParticles[selectedIndex]
-      const [minFreq, maxFreq] = particle.freqRange
-
-      if (maxFreq > 4000) {
-        updateEQ("high", xGain)
-      } else if (minFreq < 200) {
-        updateEQ("low", zGain)
-      } else {
-        updateEQ("mid", yGain)
-      }
-
-      console.log(
-        `[v0] ${particle.name} moved via keyboard: X=${xGain.toFixed(1)}, Y=${yGain.toFixed(1)}, Z=${zGain.toFixed(1)}`,
-      )
+    const handleKeyUp = (event: KeyboardEvent) => {
+      heldKeys.current.delete(event.key)
     }
 
     window.addEventListener("keydown", handleKeyDown)
-    return () => window.removeEventListener("keydown", handleKeyDown)
-  }, [selectedIndex, updateEQ])
+    window.addEventListener("keyup", handleKeyUp)
+
+    return () => {
+      window.removeEventListener("keydown", handleKeyDown)
+      window.removeEventListener("keyup", handleKeyUp)
+    }
+  }, [])
 
   const handlePointerMove = (event: PointerEvent) => {
     if (draggedIndex === null) return
@@ -289,6 +251,36 @@ export default function ParticleField() {
   useFrame((state) => {
     const time = state.clock.getElapsedTime()
 
+    // Handle continuous keyboard movement
+    if (selectedIndex !== null && heldKeys.current.size > 0) {
+      const manualOffset = manualOffsetsRef.current[selectedIndex]
+      if (manualOffset) {
+        const moveSpeed = 0.15 // Increased speed for better feel
+        
+        if (heldKeys.current.has("ArrowUp")) manualOffset.y += moveSpeed
+        if (heldKeys.current.has("ArrowDown")) manualOffset.y -= moveSpeed
+        if (heldKeys.current.has("ArrowLeft")) manualOffset.x -= moveSpeed
+        if (heldKeys.current.has("ArrowRight")) manualOffset.x += moveSpeed
+        if (heldKeys.current.has("PageUp") || heldKeys.current.has("w") || heldKeys.current.has("W")) manualOffset.z += moveSpeed
+        if (heldKeys.current.has("PageDown") || heldKeys.current.has("s") || heldKeys.current.has("S")) manualOffset.z -= moveSpeed
+
+        const xGain = THREE.MathUtils.clamp(manualOffset.x * 1.5, -12, 12)
+        const yGain = THREE.MathUtils.clamp(manualOffset.y * 1.5, -12, 12)
+        const zGain = THREE.MathUtils.clamp(manualOffset.z * 1.5, -12, 12)
+
+        const particle = allParticles[selectedIndex]
+        const [minFreq, maxFreq] = particle.freqRange
+
+        if (maxFreq > 4000) {
+          updateEQ("high", xGain)
+        } else if (minFreq < 200) {
+          updateEQ("low", zGain)
+        } else {
+          updateEQ("mid", yGain)
+        }
+      }
+    }
+
     allParticles.forEach((particle, idx) => {
       const mesh = meshRefs.current[idx]
       if (!mesh) return
@@ -296,7 +288,7 @@ export default function ParticleField() {
       const isIsolated = isolatedInstrument === null || isolatedInstrument === particle.name
       const isHovered = hoveredIndex === idx
       const isSelected = selectedIndex === idx
-      const opacity = isIsolated ? (particle.isStatic ? 1.0 : 0.8) : 0.2
+      const opacity = isIsolated ? (particle.isStatic ? 1.0 : 0.8) : 0.05 // Reduced opacity for non-isolated
 
       let intensity = 0
       if (frequencyData && isPlaying) {
@@ -310,17 +302,59 @@ export default function ParticleField() {
         intensity /= maxBin - minBin
       }
 
+      // Vocal Gating Logic
+      if (particle.name === "Vocal" && lyricsData.length > 0 && isPlaying) {
+        // Check if current time is within any lyric timestamp window
+        // Assuming lyricsData has time (seconds) and we approximate duration based on text length or next lyric
+        // If word-level timings exist, use those for precise gating
+        
+        let isSinging = false
+        
+        // Check recent lyrics to find if we are in a singing window
+        // Default "window" of 3 seconds per line if no end time known
+        const currentLyric = lyricsData.find(l => 
+          l.time <= currentTime && currentTime < l.time + 3 // 3 second window fallback
+        )
+        
+        if (currentLyric) {
+          if (currentLyric.words && currentLyric.words.length > 0) {
+            // Precise word-level checking
+             isSinging = currentLyric.words.some(w => 
+               w.start <= currentTime && w.end >= currentTime
+             )
+          } else {
+             // Line-level fallback
+             isSinging = true
+          }
+        }
+        
+        if (!isSinging) {
+          intensity = 0
+        }
+      }
+
       const isActive = particle.isStatic ? intensity > 0.1 : (particle as any).isActive && intensity > 0.1
-      const scale = (1 + (isActive ? intensity * 2 : 0)) * (isIsolated ? 1 : 0.5) * (isHovered || isSelected ? 1.3 : 1)
+      
+      // Exaggerated visual differences
+      // Active particles get much bigger
+      // Inactive ones get smaller
+      const scale = (isActive ? 1 + intensity * 4 : 0.8) * // Increased intensity scale multiplier
+                   (isIsolated ? 1 : 0.3) * // Smaller when not isolated
+                   (isHovered || isSelected ? 1.3 : 1)
 
       const baseScale = particle.isStatic ? 1 : 0.6
       mesh.scale.setScalar(scale * baseScale)
 
       const material = mesh.material as THREE.MeshStandardMaterial
+      
+      // Exaggerated emissive intensity for active state
       material.emissiveIntensity =
-        (isActive ? 0.5 + intensity * 3 : 0.1) * opacity * (isHovered || isSelected ? 1.5 : 1)
-      material.opacity = opacity * (isActive ? 1 : 0.4)
-      material.transparent = opacity < 1 || !isActive
+        (isActive ? 2.0 + intensity * 5 : 0.05) * // Much higher glow when active, very dim when not
+        opacity * 
+        (isHovered || isSelected ? 1.5 : 1)
+        
+      material.opacity = opacity * (isActive ? 1 : 0.1) // Fade out inactive particles more
+      material.transparent = true // Always enable transparency for smoother fades
 
       const basePos = particle.position
       const manualOffset = manualOffsetsRef.current[idx]
