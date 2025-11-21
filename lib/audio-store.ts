@@ -42,6 +42,9 @@ interface AudioStore {
   currentTime: number
   duration: number
   spectralCentroid: number
+  spectralRolloff: number
+  roughness: number
+  zeroCrossingRate: number
   currentChord: string
   currentNote: string
   currentLyrics: string // Added lyrics support for karaoke display
@@ -102,6 +105,26 @@ function calculateRoughness(frequencyData: Uint8Array): number {
     roughness += Math.abs(frequencyData[i] - frequencyData[i - 1])
   }
   return roughness / frequencyData.length
+}
+
+function calculateZeroCrossingRate(timeData: Uint8Array): number {
+  if (timeData.length < 2) return 0
+  
+  let zeroCrossings = 0
+  const center = 128 // Uint8Array center value (0-255 range)
+  
+  for (let i = 1; i < timeData.length; i++) {
+    const prev = timeData[i - 1] - center
+    const curr = timeData[i] - center
+    
+    // Count sign changes (zero crossings)
+    if ((prev >= 0 && curr < 0) || (prev < 0 && curr >= 0)) {
+      zeroCrossings++
+    }
+  }
+  
+  // Return crossings per second (normalized by buffer length)
+  return zeroCrossings / timeData.length
 }
 
 const NOTE_NAMES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"]
@@ -189,19 +212,6 @@ function detectChord(frequencyData: Uint8Array, sampleRate: number): { chord: st
 let chordHistory: Array<{ chord: string; note: string; timestamp: number }> = []
 const CHORD_CHANGE_THRESHOLD = 800 // ms - only update chord if it's stable for this duration
 
-const DEMO_LYRICS = [
-  { time: 0, text: "♪ Audio ready to play" },
-  { time: 5, text: "When the music starts playing" },
-  { time: 9, text: "Watch the colors dance and sway" },
-  { time: 13, text: "In this timbre space we're staying" },
-  { time: 17, text: "Where the frequencies convey" },
-  { time: 21, text: "Every tone and every feeling" },
-  { time: 25, text: "Painted bright across the sky" },
-  { time: 29, text: "Audio waves are now revealing" },
-  { time: 33, text: "Harmonies that touch the eye" },
-  { time: 37, text: "Bass and treble interweaving" },
-  { time: 41, text: "Spectral beauty on display" },
-]
 
 function detectKey(chordHistory: Array<{ chord: string; note: string }>): string {
   if (chordHistory.length < 10) return "---"
@@ -367,10 +377,13 @@ export const useAudioStore = create<AudioStore>((set, get) => ({
   currentTime: 0,
   duration: 0,
   spectralCentroid: 0,
+  spectralRolloff: 0,
+  roughness: 0,
+  zeroCrossingRate: 0,
   currentChord: "---",
   currentNote: "---",
   currentLyrics: "♪ Play audio to start",
-  lyricsData: DEMO_LYRICS, // Initialize with demo lyrics
+  lyricsData: [], // Initialize with empty array
   lyricUpdateInterval: null, // Initialize interval ID
   songKey: "---", // Initialize new fields
   chordDegree: "---", // Initialize new fields
@@ -473,6 +486,9 @@ export const useAudioStore = create<AudioStore>((set, get) => ({
 
         const sampleRate = audioContext.sampleRate
       const spectralCentroid = calculateSpectralCentroid(frequencyData, sampleRate)
+      const spectralRolloff = calculateSpectralRolloff(frequencyData, sampleRate)
+      const roughness = calculateRoughness(frequencyData)
+      const zeroCrossingRate = calculateZeroCrossingRate(timeData)
 
       const rhythmMetrics = calculateRhythmMetrics(timeData, frequencyData)
 
@@ -643,6 +659,9 @@ export const useAudioStore = create<AudioStore>((set, get) => ({
           frequencyData: new Uint8Array(frequencyData),
           timeData: new Uint8Array(timeData),
           spectralCentroid,
+          spectralRolloff,
+          roughness,
+          zeroCrossingRate,
           rhythmMetrics, // Update rhythm metrics
         })
 
@@ -756,7 +775,7 @@ export const useAudioStore = create<AudioStore>((set, get) => ({
           currentFileName: file.name,
           isPlaying: false,
           currentLyrics: "♪ Ready to play",
-          lyricsData: DEMO_LYRICS,
+          lyricsData: [],
           songKey: "---",
           chordDegree: "---",
           dynamicParticles: [], // Reset dynamic particles on new file

@@ -85,6 +85,62 @@ function ParticleTooltip({ instrument, visible }: { instrument: (typeof INSTRUME
   )
 }
 
+// Helper function to calculate EQ multiplier based on particle frequency range
+function getEQMultiplier(
+  freqRange: [number, number],
+  eqSettings: { low: number; lowMid: number; mid: number; highMid: number; high: number }
+): number {
+  const [minFreq, maxFreq] = freqRange
+  const centerFreq = (minFreq + maxFreq) / 2
+  
+  // EQ band frequencies (Hz)
+  const bands = [
+    { freq: 60, gain: eqSettings.low },
+    { freq: 250, gain: eqSettings.lowMid },
+    { freq: 1000, gain: eqSettings.mid },
+    { freq: 3000, gain: eqSettings.highMid },
+    { freq: 8000, gain: eqSettings.high }
+  ]
+  
+  // Find overlapping bands and calculate weighted average
+  let totalWeight = 0
+  let weightedGain = 0
+  
+  bands.forEach(band => {
+    // Check if band frequency is within particle's frequency range
+    if (band.freq >= minFreq && band.freq <= maxFreq) {
+      // Weight by proximity to center frequency (closer = higher weight)
+      const distance = Math.abs(band.freq - centerFreq)
+      const weight = 1 / (distance + 1)
+      weightedGain += band.gain * weight
+      totalWeight += weight
+    }
+  })
+  
+  // If no bands overlap, check which band is closest to the center frequency
+  if (totalWeight === 0) {
+    let closestBand = bands[0]
+    let minDistance = Math.abs(bands[0].freq - centerFreq)
+    
+    bands.forEach(band => {
+      const distance = Math.abs(band.freq - centerFreq)
+      if (distance < minDistance) {
+        minDistance = distance
+        closestBand = band
+      }
+    })
+    
+    // Use closest band with reduced weight based on distance
+    const weight = 1 / (minDistance / centerFreq + 0.1)
+    weightedGain = closestBand.gain * weight
+    totalWeight = weight
+  }
+  
+  const avgGain = totalWeight > 0 ? weightedGain / totalWeight : 0
+  // Convert dB to linear multiplier: +6dB = 2x, -6dB = 0.5x
+  return Math.pow(10, avgGain / 20)
+}
+
 export default function ParticleField() {
   const meshRefs = useRef<THREE.Mesh[]>([])
   const trajectoryRefs = useRef<Array<Array<{ position: THREE.Vector3; visits: number }>>>([])
@@ -104,6 +160,7 @@ export default function ParticleField() {
     isolatedInstrument,
     showClusters,
     updateEQ,
+    eqSettings,
     dynamicParticles,
     lyricsData,
     currentTime,
@@ -209,20 +266,22 @@ export default function ParticleField() {
         const newOffset = intersection.sub(dragOffsetRef.current).sub(basePos)
         manualOffsetsRef.current[draggedIndex].copy(newOffset)
 
-        const xGain = THREE.MathUtils.clamp(newOffset.x * 1.5, -12, 12)
-        const yGain = THREE.MathUtils.clamp(newOffset.y * 1.5, -12, 12)
-        const zGain = THREE.MathUtils.clamp(newOffset.z * 1.5, -12, 12)
+        // Map movement to EQ bands based on axis (brightness/depth/warmth), not frequency
+        const xGain = THREE.MathUtils.clamp(newOffset.x * 3.0, -12, 12) // Brightness
+        const yGain = THREE.MathUtils.clamp(newOffset.y * 3.0, -12, 12) // Depth/Energy
+        const zGain = THREE.MathUtils.clamp(newOffset.z * 3.0, -12, 12) // Warmth
 
-        const particle = allParticles[draggedIndex]
-        const [minFreq, maxFreq] = particle.freqRange
-
-        if (maxFreq > 4000) {
-          updateEQ("high", xGain)
-        } else if (minFreq < 200) {
-          updateEQ("low", zGain)
-        } else {
-          updateEQ("mid", yGain)
-        }
+        // Apply to relevant EQ bands proportionally
+        // Brightness affects high frequencies
+        updateEQ("high", xGain * 0.7)
+        updateEQ("highMid", xGain * 0.3)
+        
+        // Depth affects midrange
+        updateEQ("mid", yGain)
+        
+        // Warmth affects low frequencies
+        updateEQ("lowMid", zGain * 0.3)
+        updateEQ("low", zGain * 0.7)
       }
     }
   }
@@ -255,7 +314,7 @@ export default function ParticleField() {
     if (selectedIndex !== null && heldKeys.current.size > 0) {
       const manualOffset = manualOffsetsRef.current[selectedIndex]
       if (manualOffset) {
-        const moveSpeed = 0.15 // Increased speed for better feel
+        const moveSpeed = 0.3 // Increased speed for better responsiveness
         
         if (heldKeys.current.has("ArrowUp")) manualOffset.y += moveSpeed
         if (heldKeys.current.has("ArrowDown")) manualOffset.y -= moveSpeed
@@ -264,20 +323,22 @@ export default function ParticleField() {
         if (heldKeys.current.has("PageUp") || heldKeys.current.has("w") || heldKeys.current.has("W")) manualOffset.z += moveSpeed
         if (heldKeys.current.has("PageDown") || heldKeys.current.has("s") || heldKeys.current.has("S")) manualOffset.z -= moveSpeed
 
-        const xGain = THREE.MathUtils.clamp(manualOffset.x * 1.5, -12, 12)
-        const yGain = THREE.MathUtils.clamp(manualOffset.y * 1.5, -12, 12)
-        const zGain = THREE.MathUtils.clamp(manualOffset.z * 1.5, -12, 12)
+        // Map movement to EQ bands based on axis (brightness/depth/warmth), not frequency
+        const xGain = THREE.MathUtils.clamp(manualOffset.x * 3.0, -12, 12) // Brightness
+        const yGain = THREE.MathUtils.clamp(manualOffset.y * 3.0, -12, 12) // Depth/Energy
+        const zGain = THREE.MathUtils.clamp(manualOffset.z * 3.0, -12, 12) // Warmth
 
-        const particle = allParticles[selectedIndex]
-        const [minFreq, maxFreq] = particle.freqRange
-
-        if (maxFreq > 4000) {
-          updateEQ("high", xGain)
-        } else if (minFreq < 200) {
-          updateEQ("low", zGain)
-        } else {
-          updateEQ("mid", yGain)
-        }
+        // Apply to relevant EQ bands proportionally
+        // Brightness affects high frequencies
+        updateEQ("high", xGain * 0.7)
+        updateEQ("highMid", xGain * 0.3)
+        
+        // Depth affects midrange
+        updateEQ("mid", yGain)
+        
+        // Warmth affects low frequencies
+        updateEQ("lowMid", zGain * 0.3)
+        updateEQ("low", zGain * 0.7)
       }
     }
 
@@ -356,10 +417,14 @@ export default function ParticleField() {
 
       const isActive = particle.isStatic ? intensity > 0.1 : (particle as any).isActive && intensity > 0.1
       
+      // Apply EQ multiplier to intensity for visual feedback
+      const eqMultiplier = getEQMultiplier(particle.freqRange, eqSettings)
+      const adjustedIntensity = intensity * eqMultiplier
+      
       // Exaggerated visual differences
       // Active particles get much bigger
       // Inactive ones get smaller
-      const scale = (isActive ? 1 + intensity * 4 : 0.8) * // Increased intensity scale multiplier
+      const scale = (isActive ? 1 + adjustedIntensity * 4 : 0.8) * // Increased intensity scale multiplier with EQ adjustment
                    (isIsolated ? 1 : 0.3) * // Smaller when not isolated
                    (isHovered || isSelected ? 1.3 : 1)
 
@@ -368,9 +433,9 @@ export default function ParticleField() {
 
       const material = mesh.material as THREE.MeshStandardMaterial
       
-      // Exaggerated emissive intensity for active state
+      // Exaggerated emissive intensity for active state (with EQ adjustment)
       material.emissiveIntensity =
-        (isActive ? 2.0 + intensity * 5 : 0.05) * // Much higher glow when active, very dim when not
+        (isActive ? 2.0 + adjustedIntensity * 5 : 0.05) * // Much higher glow when active, very dim when not
         opacity * 
         (isHovered || isSelected ? 1.5 : 1)
         

@@ -33,6 +33,9 @@ export default function AudioControls() {
     currentTime,
     duration,
     spectralCentroid,
+    spectralRolloff,
+    roughness,
+    zeroCrossingRate,
     rhythmMetrics, // Get rhythm metrics
     isTranscribingLyrics, // Added transcription state
     transcriptionProgress, // Added transcription progress
@@ -212,7 +215,7 @@ export default function AudioControls() {
       </div>
 
       <div className="absolute top-20 left-4 pointer-events-none z-10">
-        <Card className="bg-card/80 backdrop-blur-xl border-border/50 p-3 w-48">
+        <Card className="bg-card/80 backdrop-blur-xl border-border/50 p-3 w-52">
           <h3 className="text-xs font-semibold mb-1.5">Spectral Analysis</h3>
           <div className="space-y-1 text-xs">
             <div className="flex justify-between">
@@ -220,8 +223,20 @@ export default function AudioControls() {
               <span className="font-mono">{Math.round(spectralCentroid)} Hz</span>
             </div>
             <div className="flex justify-between">
+              <span className="text-muted-foreground">Rolloff</span>
+              <span className="font-mono">{Math.round(spectralRolloff)} Hz</span>
+            </div>
+            <div className="flex justify-between">
               <span className="text-muted-foreground">Brightness</span>
               <span className="font-mono">{((spectralCentroid / 11025) * 100).toFixed(1)}%</span>
+            </div>
+            <div className="flex justify-between">
+              <span className="text-muted-foreground">Roughness</span>
+              <span className="font-mono">{roughness.toFixed(2)}</span>
+            </div>
+            <div className="flex justify-between">
+              <span className="text-muted-foreground">ZCR</span>
+              <span className="font-mono">{(zeroCrossingRate * 100).toFixed(1)}%</span>
             </div>
             <div className="flex justify-between">
               <span className="text-muted-foreground">Tempo</span>
