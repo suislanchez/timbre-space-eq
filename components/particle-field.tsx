@@ -311,7 +311,9 @@ export default function ParticleField() {
         
         // Find the current lyric entry
         const currentLyricIndex = lyricsData.findIndex(l => l.time <= lookaheadTime)
-        const currentLyric = currentLyricIndex >= 0 ? lyricsData[currentLyricIndex] : null
+        // If findIndex returns -1, check if we are before the first lyric but within range
+        const currentLyric = currentLyricIndex >= 0 ? lyricsData[currentLyricIndex] : (lyricsData[0].time <= lookaheadTime + 0.5 ? lyricsData[0] : null)
+        
         const nextLyric = currentLyricIndex >= 0 && currentLyricIndex < lyricsData.length - 1 
           ? lyricsData[currentLyricIndex + 1] 
           : null
@@ -319,26 +321,36 @@ export default function ParticleField() {
         if (currentLyric) {
           if (currentLyric.words && currentLyric.words.length > 0) {
             // Precise word-level checking with lookahead
+            // Check if currentTime is within any word's [start, end] window
+            // Also consider a small pre-roll/post-roll to ensure seamless visuals
             isSinging = currentLyric.words.some(w => 
-              w.start <= lookaheadTime && w.end >= currentTime
+              w.start <= lookaheadTime + 0.1 && w.end >= currentTime - 0.1
             )
             
             // If no word matches but we're close to a word start, check ahead
-            if (!isSinging) {
-              // Check if we're within 0.2s of any word start
-              isSinging = currentLyric.words.some(w => 
-                w.start <= lookaheadTime + 0.2 && w.start >= currentTime - 0.1
-              )
+            if (!isSinging && nextLyric && nextLyric.words && nextLyric.words.length > 0) {
+               // Check first word of next lyric line
+               const firstNextWord = nextLyric.words[0];
+               if (firstNextWord.start <= lookaheadTime + 0.1) {
+                 isSinging = true;
+               }
             }
           } else {
-            // Line-level fallback - use next lyric's time or estimate 2 seconds
-            const lyricEndTime = nextLyric ? nextLyric.time : (currentLyric.time + 2)
+            // Line-level fallback - use next lyric's time or estimate duration based on text length
+            // Average singing speed: ~3-4 chars per second, min 2s
+            const estimatedDuration = Math.max(2, currentLyric.text.length * 0.3);
+            const lyricEndTime = nextLyric ? nextLyric.time : (currentLyric.time + estimatedDuration)
+            
+            // Check if we are within the line's window
             isSinging = lookaheadTime >= currentLyric.time && currentTime < lyricEndTime
           }
         }
         
         if (!isSinging) {
           intensity = 0
+        } else {
+          // Boost intensity slightly when singing to ensure visibility
+          intensity = Math.max(intensity, 0.2)
         }
       }
 
