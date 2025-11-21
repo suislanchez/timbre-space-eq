@@ -26,7 +26,7 @@ export default function ChordDisplay() {
   const chordDegree = useAudioStore((state) => state.chordDegree)
 
   return (
-    <div className="absolute top-4 right-4 flex gap-2 z-10 pointer-events-auto">
+    <div className="absolute top-20 right-4 flex gap-2 z-10 pointer-events-auto">
       <Card className="bg-card/80 backdrop-blur-xl border-border/50 p-3">
         <div className="text-xs text-muted-foreground mb-1">Song Key</div>
         <div className="text-2xl font-bold text-white font-mono">{songKey}</div>

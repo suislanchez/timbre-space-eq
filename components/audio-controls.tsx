@@ -6,7 +6,8 @@ import { useState, useRef, useEffect } from "react"
 import { Button } from "@/components/ui/button"
 import { Slider } from "@/components/ui/slider"
 import { Card } from "@/components/ui/card"
-import { Play, Pause, Upload, Volume2, ChevronUp, ChevronDown } from "lucide-react"
+import { Play, Pause, Upload, Volume2, ChevronUp, ChevronDown, Download } from "lucide-react"
+import { Switch } from "@/components/ui/switch"
 import { useAudioStore } from "@/lib/audio-store"
 import { useToast } from "@/hooks/use-toast"
 import EQControls from "./eq-controls"
@@ -42,6 +43,13 @@ export default function AudioControls() {
     transcribeLyrics, // Added transcribe function
     loadLyricsFile,
     lyricsData,
+    showTrails,
+    showClusters,
+    showSpectralOverlay,
+    toggleTrails,
+    toggleClusters,
+    toggleSpectralOverlay,
+    exportTimbreData,
   } = useAudioStore()
   const { toast } = useToast()
 
@@ -98,6 +106,57 @@ export default function AudioControls() {
     if (lyricsInputRef.current) {
       lyricsInputRef.current.value = ""
     }
+  }
+
+  const handleExportJSON = () => {
+    const data = exportTimbreData()
+    const blob = new Blob([data], { type: "application/json" })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement("a")
+    a.href = url
+    a.download = `timbre-analysis-${Date.now()}.json`
+    a.click()
+    URL.revokeObjectURL(url)
+
+    toast({
+      title: "Data Exported",
+      description: "Timbre analysis data has been downloaded as JSON.",
+    })
+  }
+
+  const handleExportCSV = () => {
+    const state = useAudioStore.getState()
+    const data = JSON.parse(exportTimbreData())
+    
+    // Create CSV header
+    let csv = "Timestamp,Instrument,Energy,SpectralCentroid,Brightness,Roughness,Frequency,Chord,Note,Key,Degree\n"
+    
+    // Add timbre features
+    if (data.instruments && data.instruments.length > 0) {
+      data.instruments.forEach((inst: any) => {
+        const timestamp = data.timestamp || new Date().toISOString()
+        csv += `${timestamp},"${inst.name}",${inst.energy},${inst.features.spectralCentroid},${inst.features.brightness},${inst.features.roughness},${inst.features.spectralCentroid},"${data.currentChord || "---"}","${data.currentNote || "---"}","${data.songKey || "---"}","${data.chordDegree || "---"}"\n`
+      })
+    }
+    
+    // Add current state if no instruments
+    if (!data.instruments || data.instruments.length === 0) {
+      const timestamp = data.timestamp || new Date().toISOString()
+      csv += `${timestamp},"Current",${data.currentTime || 0},${data.spectralCentroid || 0},${((data.spectralCentroid || 0) / 11025) * 100},0,${data.spectralCentroid || 0},"${data.currentChord || "---"}","${data.currentNote || "---"}","${data.songKey || "---"}","${data.chordDegree || "---"}"\n`
+    }
+    
+    const blob = new Blob([csv], { type: "text/csv" })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement("a")
+    a.href = url
+    a.download = `timbre-analysis-${Date.now()}.csv`
+    a.click()
+    URL.revokeObjectURL(url)
+
+    toast({
+      title: "Data Exported",
+      description: "Timbre analysis data has been downloaded as CSV.",
+    })
   }
 
   const handleTranscribe = async () => {
@@ -213,8 +272,8 @@ export default function AudioControls() {
         <div className="pointer-events-auto">
           <Card className="bg-card/90 backdrop-blur-xl border-border/50 p-3">
             {isCollapsed ? (
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-3">
+              <div className="flex items-center justify-between gap-4">
+                <div className="flex items-center gap-3 flex-1">
                   <Button
                     size="icon"
                     variant="default"
@@ -249,6 +308,68 @@ export default function AudioControls() {
 
                   <div className="text-xs text-muted-foreground">
                     <span className="font-mono">{Math.round(spectralCentroid)} Hz</span>
+                  </div>
+                </div>
+
+                {/* Toggles for collapsed state - desktop only */}
+                <div className="hidden md:flex items-center gap-4 flex-shrink-0">
+                  <div className="flex items-center gap-2">
+                    <label htmlFor="trails-collapsed" className="text-xs text-muted-foreground cursor-pointer">
+                      Trails
+                    </label>
+                    <Switch
+                      id="trails-collapsed"
+                      checked={showTrails}
+                      onCheckedChange={toggleTrails}
+                      className="scale-75"
+                    />
+                  </div>
+
+                  <div className="flex items-center gap-2">
+                    <label htmlFor="clusters-collapsed" className="text-xs text-muted-foreground cursor-pointer">
+                      Clusters
+                    </label>
+                    <Switch
+                      id="clusters-collapsed"
+                      checked={showClusters}
+                      onCheckedChange={toggleClusters}
+                      className="scale-75"
+                    />
+                  </div>
+
+                  <div className="flex items-center gap-2">
+                    <label htmlFor="spectral-collapsed" className="text-xs text-muted-foreground cursor-pointer">
+                      Waterfall
+                    </label>
+                    <Switch
+                      id="spectral-collapsed"
+                      checked={showSpectralOverlay}
+                      onCheckedChange={toggleSpectralOverlay}
+                      className="scale-75"
+                    />
+                  </div>
+
+                  <div className="flex items-center gap-2 border-l border-border/50 pl-4">
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      onClick={handleExportJSON}
+                      className="h-7 px-2 text-xs"
+                      title="Export as JSON"
+                    >
+                      <Download className="h-3 w-3 mr-1" />
+                      JSON
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      onClick={handleExportCSV}
+                      className="h-7 px-2 text-xs"
+                      title="Export as CSV"
+                    >
+                      <Download className="h-3 w-3 mr-1" />
+                      CSV
+                    </Button>
                   </div>
                 </div>
 
