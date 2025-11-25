@@ -40,6 +40,7 @@ export default function AudioControls() {
   const [isInfoOpen, setIsInfoOpen] = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const lyricsInputRef = useRef<HTMLInputElement>(null)
+  const stemsInputRef = useRef<HTMLInputElement>(null)
   const {
     isPlaying,
     volume,
@@ -63,9 +64,14 @@ export default function AudioControls() {
     showTrails,
     showClusters,
     showSpectralOverlay,
+    showLyrics,
+    stems,
     toggleTrails,
     toggleClusters,
     toggleSpectralOverlay,
+    toggleLyrics,
+    loadStemFile,
+    toggleStem,
     exportTimbreData,
     seekTo,
     replay,
@@ -231,9 +237,65 @@ export default function AudioControls() {
     seekTo(nextPosition)
   }
 
+  const handleStemsUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files
+    if (!files || files.length === 0) return
+
+    console.log("[v0] Uploading stems:", files.length, "files")
+
+    // Detect stem type from filename
+    const detectStemType = (filename: string): "vocals" | "drums" | "bass" | "other" | null => {
+      const lower = filename.toLowerCase()
+      if (lower.includes("vocal")) return "vocals"
+      if (lower.includes("drum")) return "drums"
+      if (lower.includes("bass")) return "bass"
+      if (lower.includes("other") || lower.includes("instrument")) return "other"
+      return null
+    }
+
+    let successCount = 0
+    for (let i = 0; i < files.length; i++) {
+      const file = files[i]
+      const stemType = detectStemType(file.name)
+
+      if (!stemType) {
+        console.warn("[v0] Could not detect stem type from filename:", file.name)
+        toast({
+          title: "Unknown stem type",
+          description: `Could not detect stem type from "${file.name}". Please include "vocals", "drums", "bass", or "other" in the filename.`,
+          variant: "destructive",
+        })
+        continue
+      }
+
+      const success = await loadStemFile(stemType, file)
+      if (success) {
+        successCount++
+      } else {
+        toast({
+          title: "Failed to load stem",
+          description: `Could not load ${stemType} stem from "${file.name}"`,
+          variant: "destructive",
+        })
+      }
+    }
+
+    if (successCount > 0) {
+      toast({
+        title: "Stems loaded",
+        description: `Successfully loaded ${successCount} stem${successCount > 1 ? "s" : ""}`,
+      })
+    }
+
+    if (stemsInputRef.current) {
+      stemsInputRef.current.value = ""
+    }
+  }
+
   const effectiveCurrentTime = pendingSeek ?? currentTime
   const timelineDisabled = !duration || duration <= 0
   const timelineMax = duration > 0 ? duration : 1
+  const stemsLoaded = Object.values(stems).some((stem) => stem !== null)
 
   return (
     <>
@@ -458,6 +520,18 @@ export default function AudioControls() {
                     />
                   </div>
 
+                  <div className="flex items-center gap-2">
+                    <label htmlFor="lyrics-collapsed" className="text-xs text-muted-foreground cursor-pointer">
+                      Lyrics
+                    </label>
+                    <Switch
+                      id="lyrics-collapsed"
+                      checked={showLyrics}
+                      onCheckedChange={toggleLyrics}
+                      className="scale-75"
+                    />
+                  </div>
+
                   <div className="flex items-center gap-2 border-l border-border/50 pl-4">
                     <Button
                       size="sm"
@@ -528,6 +602,28 @@ export default function AudioControls() {
                     />
 
                     <Button
+                      size="icon"
+                      variant="outline"
+                      onClick={() => stemsInputRef.current?.click()}
+                      className="h-10 w-10 rounded-full relative"
+                      disabled={isLoading || isTranscribingLyrics}
+                      title="Upload separated stems (vocals, drums, bass, other)"
+                    >
+                      <Upload className="h-4 w-4" />
+                      {stemsLoaded && (
+                        <div className="absolute -top-1 -right-1 w-3 h-3 bg-green-500 rounded-full border-2 border-background" />
+                      )}
+                    </Button>
+                    <input
+                      ref={stemsInputRef}
+                      type="file"
+                      accept="audio/wav,audio/mpeg,audio/mp3"
+                      multiple
+                      onChange={handleStemsUpload}
+                      className="hidden"
+                    />
+
+                    <Button
                       size="sm"
                       variant="secondary"
                       onClick={handleTranscribe}
@@ -579,6 +675,35 @@ export default function AudioControls() {
                   <div className="flex-1">
                     <AdvancedControls />
                   </div>
+
+                  {stemsLoaded && (
+                    <div className="flex-1 border-l border-border/50 pl-4">
+                      <div className="text-xs font-semibold mb-2 text-muted-foreground">Stems</div>
+                      <div className="grid grid-cols-2 gap-2">
+                        {(["vocals", "drums", "bass", "other"] as const).map((stemType) => {
+                          const stem = stems[stemType]
+                          if (!stem) return null
+
+                          return (
+                            <div key={stemType} className="flex items-center gap-2">
+                              <Switch
+                                id={`stem-${stemType}`}
+                                checked={stem.enabled}
+                                onCheckedChange={() => toggleStem(stemType)}
+                                className="scale-75"
+                              />
+                              <label
+                                htmlFor={`stem-${stemType}`}
+                                className="text-xs text-muted-foreground cursor-pointer capitalize"
+                              >
+                                {stemType}
+                              </label>
+                            </div>
+                          )
+                        })}
+                      </div>
+                    </div>
+                  )}
                 </div>
 
                 <Button size="icon" variant="ghost" onClick={() => setIsCollapsed(true)} className="h-8 w-8">

@@ -15,6 +15,12 @@ interface InstrumentTimbre {
   trajectory: Array<[number, number, number]> // 3D position history
 }
 
+interface StemTrack {
+  element: HTMLAudioElement
+  enabled: boolean
+  fileName: string
+}
+
 interface AudioStore {
   audioContext: AudioContext | null
   analyser: AnalyserNode | null
@@ -25,6 +31,12 @@ interface AudioStore {
   isPlaying: boolean
   volume: number
   currentFileName: string | null
+  stems: {
+    vocals: StemTrack | null
+    drums: StemTrack | null
+    bass: StemTrack | null
+    other: StemTrack | null
+  }
   eqSettings: {
     low: number
     lowMid: number
@@ -63,6 +75,7 @@ interface AudioStore {
   predictability: number
   showFrequencyGraph: boolean
   showKrumhanslMap: boolean
+  showLyrics: boolean
   dynamicParticles: Array<{
     id: string
     name: string
@@ -400,7 +413,14 @@ export const useAudioStore = create<AudioStore>((set, get) => ({
   predictability: 0,
   showFrequencyGraph: false,
   showKrumhanslMap: false,
+  showLyrics: false,
   dynamicParticles: [], // Initialize dynamic particles array
+  stems: {
+    vocals: null,
+    drums: null,
+    bass: null,
+    other: null,
+  },
 
   initAudio: () => {
     if (typeof window === "undefined") return
@@ -415,6 +435,20 @@ export const useAudioStore = create<AudioStore>((set, get) => ({
       const duration = audioElement.duration || 0
 
       set({ currentTime, duration })
+
+      // Sync all enabled stems with main audio time
+      const { stems, isPlaying } = get()
+      if (isPlaying) {
+        Object.values(stems).forEach((stem) => {
+          if (stem && stem.enabled) {
+            // Only sync if drift is significant (> 0.1 seconds)
+            const drift = Math.abs(stem.element.currentTime - currentTime)
+            if (drift > 0.1) {
+              stem.element.currentTime = currentTime
+            }
+          }
+        })
+      }
 
       // Update lyrics based on timestamp
       const { lyricsData } = get()
@@ -698,7 +732,7 @@ export const useAudioStore = create<AudioStore>((set, get) => ({
     // Ensure AudioContext is created/resumed (requires user gesture)
     await get().ensureAudioContext()
 
-    const { audioElement, audioContext, isPlaying } = get()
+    const { audioElement, audioContext, isPlaying, stems } = get()
     if (!audioElement || !audioContext) {
       console.warn("[v0] AudioContext not initialized. This should not happen.")
       return
@@ -715,12 +749,32 @@ export const useAudioStore = create<AudioStore>((set, get) => ({
 
     if (isPlaying) {
       audioElement.pause()
+      
+      // Pause all enabled stems
+      Object.values(stems).forEach((stem) => {
+        if (stem && stem.enabled && !stem.element.paused) {
+          stem.element.pause()
+        }
+      })
+      
       set({ isPlaying: false, currentLyrics: "♪ Paused" })
     } else {
       audioElement
         .play()
         .then(() => {
           console.log("[v0] Playback started successfully")
+          
+          // Play all enabled stems
+          Object.entries(stems).forEach(([type, stem]) => {
+            if (stem && stem.enabled) {
+              // Sync time before playing
+              stem.element.currentTime = audioElement.currentTime
+              stem.element.play().catch((error) => {
+                console.error(`[v0] Failed to play ${type} stem:`, error)
+              })
+            }
+          })
+          
           set({ isPlaying: true })
         })
         .catch((error) => {
@@ -731,7 +785,7 @@ export const useAudioStore = create<AudioStore>((set, get) => ({
   },
 
   seekTo: (positionSeconds: number) => {
-    const { audioElement, duration } = get()
+    const { audioElement, duration, stems } = get()
     if (!audioElement) {
       console.warn("[v0] seekTo called before audioElement initialized")
       return
@@ -745,23 +799,49 @@ export const useAudioStore = create<AudioStore>((set, get) => ({
 
     const clampedPosition = Math.min(Math.max(positionSeconds, 0), safeDuration || 0)
     audioElement.currentTime = clampedPosition
+    
+    // Sync all stems to the new position
+    Object.values(stems).forEach((stem) => {
+      if (stem) {
+        stem.element.currentTime = clampedPosition
+      }
+    })
+    
     set({ currentTime: clampedPosition })
   },
 
   replay: () => {
-    const { audioElement } = get()
+    const { audioElement, stems } = get()
     if (!audioElement) {
       console.warn("[v0] replay called before audioElement initialized")
       return
     }
 
     audioElement.currentTime = 0
+    
+    // Reset all stems to beginning
+    Object.values(stems).forEach((stem) => {
+      if (stem) {
+        stem.element.currentTime = 0
+      }
+    })
+    
     set({ currentTime: 0 })
 
     if (audioElement.paused) {
       audioElement
         .play()
-        .then(() => set({ isPlaying: true }))
+        .then(() => {
+          // Play all enabled stems
+          Object.entries(stems).forEach(([type, stem]) => {
+            if (stem && stem.enabled) {
+              stem.element.play().catch((error) => {
+                console.error(`[v0] Failed to play ${type} stem on replay:`, error)
+              })
+            }
+          })
+          set({ isPlaying: true })
+        })
         .catch((error) => {
           console.error("[v0] Replay failed:", error)
           set({ isPlaying: false })
@@ -1272,4 +1352,120 @@ export const useAudioStore = create<AudioStore>((set, get) => ({
 
   toggleFrequencyGraph: () => set((state) => ({ showFrequencyGraph: !state.showFrequencyGraph })),
   toggleKrumhanslMap: () => set((state) => ({ showKrumhanslMap: !state.showKrumhanslMap })),
+  toggleLyrics: () => set((state) => ({ showLyrics: !state.showLyrics })),
+
+  loadStemFile: async (stemType: "vocals" | "drums" | "bass" | "other", file: File): Promise<boolean> => {
+    const { audioElement } = get()
+    
+    // Validate file type
+    const validTypes = ["audio/mpeg", "audio/mp3", "audio/wav", "audio/ogg", "audio/webm", "audio/flac", "audio/aac"]
+    const isValidType = validTypes.some((type) => file.type.startsWith(type.split("/")[0]))
+
+    if (!isValidType && !file.name.match(/\.(mp3|wav|ogg|webm|flac|aac|m4a)$/i)) {
+      console.error("[v0] Invalid stem file type. Please upload a valid audio file.")
+      return false
+    }
+
+    return new Promise((resolve) => {
+      const stemElement = new Audio()
+      stemElement.crossOrigin = "anonymous"
+      
+      const url = URL.createObjectURL(file)
+      stemElement.src = url
+
+      const handleCanPlay = () => {
+        console.log("[v0] Stem loaded successfully:", stemType, file.name)
+        
+        // Sync with main audio if it exists
+        if (audioElement) {
+          stemElement.currentTime = audioElement.currentTime
+        }
+        
+        set((state) => ({
+          stems: {
+            ...state.stems,
+            [stemType]: {
+              element: stemElement,
+              enabled: true,
+              fileName: file.name,
+            },
+          },
+        }))
+        
+        cleanup()
+        resolve(true)
+      }
+
+      const handleError = (e: ErrorEvent | Event) => {
+        console.error("[v0] Failed to load stem file:", stemType, file.name, e)
+        URL.revokeObjectURL(url)
+        cleanup()
+        resolve(false)
+      }
+
+      const cleanup = () => {
+        stemElement.removeEventListener("canplay", handleCanPlay)
+        stemElement.removeEventListener("error", handleError)
+      }
+
+      stemElement.addEventListener("canplay", handleCanPlay)
+      stemElement.addEventListener("error", handleError)
+      stemElement.load()
+    })
+  },
+
+  toggleStem: (stemType: "vocals" | "drums" | "bass" | "other") => {
+    const { stems, isPlaying } = get()
+    const stem = stems[stemType]
+    
+    if (!stem) return
+    
+    const newEnabled = !stem.enabled
+    
+    // If disabling, pause the stem
+    if (!newEnabled && !stem.element.paused) {
+      stem.element.pause()
+    }
+    
+    // If enabling and main audio is playing, play the stem
+    if (newEnabled && isPlaying) {
+      stem.element.play().catch((error) => {
+        console.error("[v0] Failed to play stem:", stemType, error)
+      })
+    }
+    
+    set((state) => ({
+      stems: {
+        ...state.stems,
+        [stemType]: {
+          ...stem,
+          enabled: newEnabled,
+        },
+      },
+    }))
+  },
+
+  clearStems: () => {
+    const { stems } = get()
+    
+    // Pause and revoke URLs for all stems
+    Object.values(stems).forEach((stem) => {
+      if (stem) {
+        stem.element.pause()
+        if (stem.element.src && stem.element.src.startsWith("blob:")) {
+          URL.revokeObjectURL(stem.element.src)
+        }
+        stem.element.src = ""
+      }
+    })
+    
+    set({
+      stems: {
+        vocals: null,
+        drums: null,
+        bass: null,
+        other: null,
+      },
+    })
+  },
 }))
