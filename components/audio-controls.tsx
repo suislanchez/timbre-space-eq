@@ -6,7 +6,19 @@ import { useState, useRef, useEffect } from "react"
 import { Button } from "@/components/ui/button"
 import { Slider } from "@/components/ui/slider"
 import { Card } from "@/components/ui/card"
-import { Play, Pause, Upload, Volume2, ChevronUp, ChevronDown, Download } from "lucide-react"
+import ChordDisplay from "@/components/chord-display"
+import {
+  Play,
+  Pause,
+  Upload,
+  Volume2,
+  ChevronUp,
+  ChevronDown,
+  Download,
+  RotateCcw,
+  Info,
+  X,
+} from "lucide-react"
 import { Switch } from "@/components/ui/switch"
 import { useAudioStore } from "@/lib/audio-store"
 import { useToast } from "@/hooks/use-toast"
@@ -24,6 +36,8 @@ function formatTime(seconds: number): string {
 export default function AudioControls() {
   const [isCollapsed, setIsCollapsed] = useState(false)
   const [isLoading, setIsLoading] = useState(false)
+  const [pendingSeek, setPendingSeek] = useState<number | null>(null)
+  const [isInfoOpen, setIsInfoOpen] = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const lyricsInputRef = useRef<HTMLInputElement>(null)
   const {
@@ -53,6 +67,8 @@ export default function AudioControls() {
     toggleClusters,
     toggleSpectralOverlay,
     exportTimbreData,
+    seekTo,
+    replay,
   } = useAudioStore()
   const { toast } = useToast()
 
@@ -203,18 +219,80 @@ export default function AudioControls() {
     }
   }
 
+  const handleTimelineChange = (value: number[]) => {
+    if (!value.length) return
+    setPendingSeek(value[0])
+  }
+
+  const handleTimelineCommit = (value: number[]) => {
+    if (!value.length) return
+    const nextPosition = value[0]
+    setPendingSeek(null)
+    seekTo(nextPosition)
+  }
+
+  const effectiveCurrentTime = pendingSeek ?? currentTime
+  const timelineDisabled = !duration || duration <= 0
+  const timelineMax = duration > 0 ? duration : 1
+
   return (
     <>
       <div className="absolute top-0 left-0 right-0 p-4 pointer-events-none z-10">
-        <div className="flex items-center justify-between">
-          <div>
+        <div className="flex items-center justify-between gap-4">
+          <div className="pointer-events-auto">
             <h1 className="text-2xl font-bold text-foreground tracking-tight">Timbre Space EQ</h1>
             <p className="text-xs text-muted-foreground mt-0.5">{currentFileName || "Upload a track to begin"}</p>
+          </div>
+          <div className="pointer-events-auto">
+            <Button
+              size="icon"
+              variant="ghost"
+              className="h-9 w-9 rounded-full"
+              onClick={() => setIsInfoOpen((prev) => !prev)}
+              aria-label={isInfoOpen ? "Hide project details" : "Show project details"}
+            >
+              {isInfoOpen ? <X className="h-4 w-4" /> : <Info className="h-4 w-4" />}
+            </Button>
           </div>
         </div>
       </div>
 
-      <div className="absolute top-20 left-4 pointer-events-none z-10">
+      {isInfoOpen && (
+        <div className="absolute top-16 right-4 max-w-md pointer-events-auto z-20">
+          <Card className="bg-card/95 backdrop-blur-2xl border-border/60 p-4 shadow-2xl">
+            <div className="mb-3">
+              <h2 className="text-lg font-semibold">Timbre Space EQ Visualizer</h2>
+              <p className="text-xs text-muted-foreground">
+                Real-time psychoacoustic & harmonic intelligence for exploratory music research
+              </p>
+            </div>
+            <div className="space-y-3 text-sm text-muted-foreground">
+              {PROJECT_SUMMARY_PARAGRAPHS.map((paragraph) => (
+                <p key={paragraph}>{paragraph}</p>
+              ))}
+              <div>
+                <h3 className="text-xs font-semibold tracking-wide text-foreground mb-1">Research links</h3>
+                <ul className="space-y-1">
+                  {RESEARCH_LINKS.map((link) => (
+                    <li key={link.url}>
+                      <a
+                        href={link.url}
+                        className="text-primary hover:underline"
+                        target="_blank"
+                        rel="noreferrer"
+                      >
+                        {link.title}
+                      </a>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            </div>
+          </Card>
+        </div>
+      )}
+
+      <div className="absolute top-20 left-4 pointer-events-none z-10 flex flex-wrap gap-3 items-start">
         <Card className="bg-card/80 backdrop-blur-xl border-border/50 p-3 w-52">
           <h3 className="text-xs font-semibold mb-1.5">Spectral Analysis</h3>
           <div className="space-y-1 text-xs">
@@ -252,6 +330,8 @@ export default function AudioControls() {
             </div>
           </div>
         </Card>
+
+        <ChordDisplay className="bg-transparent" />
       </div>
 
       <div className="absolute bottom-24 left-4 pointer-events-none z-10">
@@ -298,16 +378,30 @@ export default function AudioControls() {
                   >
                     {isPlaying ? <Pause className="h-4 w-4" /> : <Play className="h-4 w-4 ml-0.5" />}
                   </Button>
+                  <Button
+                    size="icon"
+                    variant="ghost"
+                    onClick={replay}
+                    className="h-9 w-9 rounded-full"
+                    disabled={!currentFileName || isLoading || isTranscribingLyrics}
+                    title="Replay from beginning"
+                  >
+                    <RotateCcw className="h-4 w-4" />
+                  </Button>
 
-                  <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                    <span className="font-mono">{formatTime(currentTime)}</span>
-                    <div className="w-32 bg-muted rounded-full h-1.5">
-                      <div
-                        className="bg-primary h-1.5 rounded-full transition-all"
-                        style={{ width: `${duration > 0 ? (currentTime / duration) * 100 : 0}%` }}
-                      />
-                    </div>
-                    <span className="font-mono">{formatTime(duration)}</span>
+                  <div className="flex items-center gap-2 text-xs text-muted-foreground w-60">
+                    <span className="font-mono w-12">{formatTime(effectiveCurrentTime)}</span>
+                    <Slider
+                      value={[Math.min(effectiveCurrentTime, timelineMax)]}
+                      max={timelineMax}
+                      step={0.01}
+                      onValueChange={handleTimelineChange}
+                      onValueCommit={handleTimelineCommit}
+                      disabled={timelineDisabled}
+                      className="flex-1"
+                      aria-label="Timeline"
+                    />
+                    <span className="font-mono w-12 text-right">{formatTime(duration)}</span>
                   </div>
 
                   <div className="flex items-center gap-2 w-24">
@@ -405,6 +499,16 @@ export default function AudioControls() {
                     >
                       {isPlaying ? <Pause className="h-4 w-4" /> : <Play className="h-4 w-4 ml-0.5" />}
                     </Button>
+                  <Button
+                    size="icon"
+                    variant="ghost"
+                    onClick={replay}
+                    className="h-10 w-10 rounded-full"
+                    disabled={!currentFileName || isLoading || isTranscribingLyrics}
+                    title="Replay from beginning"
+                  >
+                    <RotateCcw className="h-4 w-4" />
+                  </Button>
 
                     <Button
                       size="icon"
@@ -452,17 +556,20 @@ export default function AudioControls() {
                     )}
                   </div>
 
-                  <div className="flex flex-col gap-0.5 w-48">
+                  <div className="flex flex-col gap-1 w-60">
                     <div className="flex items-center justify-between text-xs text-muted-foreground">
-                      <span>{formatTime(currentTime)}</span>
+                      <span>{formatTime(effectiveCurrentTime)}</span>
                       <span>{formatTime(duration)}</span>
                     </div>
-                    <div className="w-full bg-muted rounded-full h-1.5">
-                      <div
-                        className="bg-primary h-1.5 rounded-full transition-all"
-                        style={{ width: `${duration > 0 ? (currentTime / duration) * 100 : 0}%` }}
-                      />
-                    </div>
+                    <Slider
+                      value={[Math.min(effectiveCurrentTime, timelineMax)]}
+                      max={timelineMax}
+                      step={0.01}
+                      onValueChange={handleTimelineChange}
+                      onValueCommit={handleTimelineCommit}
+                      disabled={timelineDisabled}
+                      aria-label="Timeline"
+                    />
                   </div>
 
                   <div className="flex-1">
@@ -485,3 +592,33 @@ export default function AudioControls() {
     </>
   )
 }
+
+interface ResearchLink {
+  title: string
+  url: string
+}
+
+const PROJECT_SUMMARY_PARAGRAPHS = [
+  "Timbre Space EQ Visualizer turns every instrument into a timbral node that moves through a 3D psychoacoustic field derived from brightness, warmth, depth, and energy cues.",
+  "Real-time source separation plus feature clustering surfaces spectral content, rhythm descriptors, and evolving chord structures so researchers can correlate timbre, harmony, and predictability.",
+  "Built-in Markov modeling maps transitions across the Circle of Fifths, quantifies harmonic entropy, and exports structured CSV/JSON snapshots for downstream ML training or analytical notebooks.",
+]
+
+const RESEARCH_LINKS: ResearchLink[] = [
+  {
+    title: "Realtime Generation of Harmonic Progressions Using Controlled Markov Models",
+    url: "https://www.sfu.ca/~eigenfel/ControlledMarkovSelection.pdf",
+  },
+  {
+    title: "Real-time Timbral Analysis for Musical and Visual Augmentation",
+    url: "https://timbreandorchestration.org/writings/project-reports/real-time-timbral-analysis",
+  },
+  {
+    title: "A Probabilistic Model for Chord Progressions - ISMIR 2005",
+    url: "https://ismir2005.ismir.net/proceedings/1091.pdf",
+  },
+  {
+    title: "An Exploration of Real-Time Visualizations of Musical Timbre",
+    url: "https://cnmat.berkeley.edu/sites/default/files/attachments/2009_An_Exploration_of_Real-Time_Visualizations_of_Musical_Timbre.pdfs",
+  },
+]

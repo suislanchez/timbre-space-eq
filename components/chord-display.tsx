@@ -1,6 +1,7 @@
 "use client"
 import { useAudioStore } from "@/lib/audio-store"
 import { Card } from "@/components/ui/card"
+import { cn } from "@/lib/utils"
 
 const CIRCLE_OF_FIFTHS = ["C", "G", "D", "A", "E", "B", "F#", "C#", "G#", "D#", "A#", "F"]
 
@@ -19,14 +20,18 @@ const NOTE_COLORS: Record<string, string> = {
   B: "#6366f1",
 }
 
-export default function ChordDisplay() {
+interface ChordDisplayProps {
+  className?: string
+}
+
+export default function ChordDisplay({ className }: ChordDisplayProps = {}) {
   const currentChord = useAudioStore((state) => state.currentChord)
   const currentNote = useAudioStore((state) => state.currentNote)
   const songKey = useAudioStore((state) => state.songKey)
   const chordDegree = useAudioStore((state) => state.chordDegree)
 
   return (
-    <div className="absolute top-32 right-4 flex gap-2 z-10 pointer-events-auto">
+    <div className={cn("flex gap-2 z-10 pointer-events-auto", className)}>
       <Card className="bg-card/80 backdrop-blur-xl border-border/50 p-3">
         <div className="text-xs text-muted-foreground mb-1">Song Key</div>
         <div className="text-2xl font-bold text-white font-mono">{songKey}</div>

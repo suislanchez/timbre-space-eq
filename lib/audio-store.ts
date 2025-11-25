@@ -73,6 +73,8 @@ interface AudioStore {
     lastActive: number
     isActive: boolean
   }>
+  seekTo: (positionSeconds: number) => void
+  replay: () => void
 }
 
 function calculateSpectralCentroid(frequencyData: Uint8Array, sampleRate: number): number {
@@ -593,10 +595,14 @@ export const useAudioStore = create<AudioStore>((set, get) => ({
               const freqNormalized = Math.log10(freq / 20) / Math.log10(20000 / 20) // Logarithmic scale 0-1
               const brightness = freqNormalized * 5 - 2.5 // Map to -2.5 to +2.5
 
-              // Energy/Depth (Y-axis): based on magnitude and harmonics
-              // Use magnitude to determine vertical position
               const energyNormalized = magnitude / 255
-              const energy = energyNormalized * 4 - 1 // Map to -1 to +3
+
+              // Height (Y-axis): primarily mapped from frequency so higher Hz sit higher
+              const minHeight = -2
+              const maxHeight = 3
+              const frequencyHeight = minHeight + freqNormalized * (maxHeight - minHeight)
+              const energyLift = (energyNormalized - 0.5) * 0.6 // subtle modulation
+              const height = frequencyHeight + energyLift
 
               // Warmth (Z-axis): inverse relationship with frequency
               // Low frequencies are "warm" (positive Z), high frequencies are "cool" (negative Z)
@@ -617,7 +623,7 @@ export const useAudioStore = create<AudioStore>((set, get) => ({
                 id: `dynamic-${freq.toFixed(0)}-${currentTime}`,
                 name: `${freq.toFixed(0)}Hz`,
                 color,
-                position: [brightness + jitterX, energy + jitterY, warmth + jitterZ] as [number, number, number],
+                position: [brightness + jitterX, height + jitterY, warmth + jitterZ] as [number, number, number],
                 freqRange,
                 createdAt: currentTime,
                 lastActive: currentTime,
@@ -719,6 +725,45 @@ export const useAudioStore = create<AudioStore>((set, get) => ({
         })
         .catch((error) => {
           console.error("[v0] Playback failed:", error)
+          set({ isPlaying: false })
+        })
+    }
+  },
+
+  seekTo: (positionSeconds: number) => {
+    const { audioElement, duration } = get()
+    if (!audioElement) {
+      console.warn("[v0] seekTo called before audioElement initialized")
+      return
+    }
+
+    const safeDuration = Number.isFinite(duration) && duration > 0 ? duration : audioElement.duration
+    if (!Number.isFinite(positionSeconds) || positionSeconds < 0) {
+      console.warn("[v0] Invalid seek position:", positionSeconds)
+      return
+    }
+
+    const clampedPosition = Math.min(Math.max(positionSeconds, 0), safeDuration || 0)
+    audioElement.currentTime = clampedPosition
+    set({ currentTime: clampedPosition })
+  },
+
+  replay: () => {
+    const { audioElement } = get()
+    if (!audioElement) {
+      console.warn("[v0] replay called before audioElement initialized")
+      return
+    }
+
+    audioElement.currentTime = 0
+    set({ currentTime: 0 })
+
+    if (audioElement.paused) {
+      audioElement
+        .play()
+        .then(() => set({ isPlaying: true }))
+        .catch((error) => {
+          console.error("[v0] Replay failed:", error)
           set({ isPlaying: false })
         })
     }

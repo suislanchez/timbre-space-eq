@@ -3,8 +3,6 @@
 import { Suspense } from "react"
 import TimbreSpaceVisualizer from "@/components/timbre-space-visualizer"
 import AudioControls from "@/components/audio-controls"
-import ChordDisplay from "@/components/chord-display"
-import LyricsDisplay from "@/components/lyrics-display"
 import PredictabilityPanel from "@/components/predictability-panel"
 import FrequencyGraphOverlay from "@/components/frequency-graph-overlay"
 
@@ -16,8 +14,6 @@ export default function Page() {
         <TimbreSpaceVisualizer />
       </Suspense>
       <AudioControls />
-      <ChordDisplay />
-      <LyricsDisplay />
       <PredictabilityPanel />
     </div>
   )

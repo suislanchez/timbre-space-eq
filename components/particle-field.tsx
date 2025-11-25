@@ -456,12 +456,15 @@ export default function ParticleField() {
       let targetZ = basePos[2] + manualOffset.z
 
       if (!isManuallyPositioned && isPlaying) {
-        const brightnessOffset = (particle.freqRange[0] / 10000 - 0.5) * intensity * 0.8
-        const energyOffset = intensity * 1.5
-        const warmthOffset = (1 - particle.freqRange[0] / 8000) * intensity * 0.6
+        const avgFreq = (particle.freqRange[0] + particle.freqRange[1]) / 2
+        const freqNormalizedRaw = Math.log10(Math.max(avgFreq, 21) / 20) / Math.log10(20000 / 20)
+        const freqNormalized = THREE.MathUtils.clamp(freqNormalizedRaw, 0, 1)
+        const brightnessOffset = (freqNormalized - 0.5) * intensity * 0.5
+        const heightOffset = (intensity - 0.5) * 0.4
+        const warmthOffset = (1 - freqNormalized) * intensity * 0.4
 
         targetX += brightnessOffset + Math.sin(time * 0.3 + idx) * 0.05
-        targetY += energyOffset + Math.cos(time * 0.4 + idx) * 0.05
+        targetY += heightOffset + Math.cos(time * 0.4 + idx) * 0.05
         targetZ += warmthOffset + Math.sin(time * 0.2 + idx) * 0.05
       }
 
