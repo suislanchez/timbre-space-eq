@@ -27,13 +27,18 @@ export default function WaterPlane() {
       waterNormals: waterNormals,
       sunDirection: new THREE.Vector3(1, 1, 0.5),
       sunColor: 0xffffff,
-      waterColor: 0x001e0f,
-      distortionScale: 3.7,
+      waterColor: 0x0066cc, // Blue color
+      distortionScale: 0, // Start with no distortion (still water)
       fog: false,
     })
 
     waterInstance.rotation.x = -Math.PI / 2
     waterInstance.position.y = 0
+
+    // Enable transparency
+    const material = waterInstance.material as THREE.ShaderMaterial
+    material.transparent = true
+    material.opacity = 0.6 // Semi-transparent blue
 
     return waterInstance
   }, [waterGeometry])
@@ -42,49 +47,51 @@ export default function WaterPlane() {
     if (!waterRef.current) return
 
     try {
-      // Update water time for continuous animation
       const material = waterRef.current.material as THREE.ShaderMaterial
       if (!material || !material.uniforms) return
       
-      material.uniforms['time'].value += 1.0 / 60.0
+      // Only animate when music is playing
+      if (isPlaying && frequencyData && frequencyData.length > 0) {
+        // Update water time for continuous animation
+        material.uniforms['time'].value += 1.0 / 60.0
 
-      // React to frequency data
-      if (frequencyData && isPlaying && frequencyData.length > 0) {
-      // Calculate average energy from low frequencies (bass)
-      const bassEnergy = frequencyData.slice(0, 10).reduce((sum, val) => sum + val, 0) / 10 / 255
-      
-      // Calculate average energy from mid frequencies
-      const midEnergy = frequencyData.slice(10, 50).reduce((sum, val) => sum + val, 0) / 40 / 255
-      
-      // Calculate average energy from high frequencies
-      const highEnergy = frequencyData.slice(50, 100).reduce((sum, val) => sum + val, 0) / 50 / 255
+        // Calculate average energy from low frequencies (bass)
+        const bassEnergy = frequencyData.slice(0, 10).reduce((sum, val) => sum + val, 0) / 10 / 255
+        
+        // Calculate average energy from mid frequencies
+        const midEnergy = frequencyData.slice(10, 50).reduce((sum, val) => sum + val, 0) / 40 / 255
+        
+        // Calculate average energy from high frequencies
+        const highEnergy = frequencyData.slice(50, 100).reduce((sum, val) => sum + val, 0) / 50 / 255
 
-      // Map bass energy to distortion scale (larger waves)
-      const targetDistortion = 2.0 + bassEnergy * 8.0
-      
-      // Smooth transition
-      const currentDistortion = material.uniforms['distortionScale'].value
-      material.uniforms['distortionScale'].value = THREE.MathUtils.lerp(
-        currentDistortion,
-        targetDistortion,
-        0.1
-      )
-
-      // Optionally modulate water color based on mid/high frequencies
-      const waterColor = new THREE.Color(0x001e0f)
-      waterColor.r += midEnergy * 0.1
-      waterColor.g += midEnergy * 0.15
-      waterColor.b += highEnergy * 0.2
-      
-      material.uniforms['waterColor'].value = waterColor
-      } else {
-        // Gentle waves when not playing
+        // Map bass energy to distortion scale (larger waves)
+        const targetDistortion = 1.5 + bassEnergy * 6.0
+        
+        // Smooth transition
         const currentDistortion = material.uniforms['distortionScale'].value
         material.uniforms['distortionScale'].value = THREE.MathUtils.lerp(
           currentDistortion,
-          3.0,
-          0.05
+          targetDistortion,
+          0.1
         )
+
+        // Slightly modulate blue color based on frequencies (keep it blue)
+        const waterColor = new THREE.Color(0x0066cc) // Base blue
+        waterColor.r = Math.min(0.2 + midEnergy * 0.1, 0.4) // Slight red tint
+        waterColor.g = Math.min(0.4 + midEnergy * 0.2, 0.6) // Slight green tint
+        waterColor.b = Math.min(0.8 + highEnergy * 0.2, 1.0) // Brighten blue
+        
+        material.uniforms['waterColor'].value = waterColor
+      } else {
+        // Completely still when not playing - no time increment, no distortion
+        material.uniforms['distortionScale'].value = THREE.MathUtils.lerp(
+          material.uniforms['distortionScale'].value,
+          0,
+          0.1
+        )
+        
+        // Reset to base blue color
+        material.uniforms['waterColor'].value = new THREE.Color(0x0066cc)
       }
     } catch (error) {
       console.error("[v0] Error updating water plane:", error)
