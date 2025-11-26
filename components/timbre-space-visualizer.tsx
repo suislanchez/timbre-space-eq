@@ -6,11 +6,13 @@ import { EffectComposer, Bloom } from "@react-three/postprocessing"
 import ParticleField from "./particle-field"
 import AxisLabels from "./axis-labels"
 import SpectralOverlay from "./spectral-overlay"
+import WaterPlane from "./water-plane"
 import { useAudioStore } from "@/lib/audio-store"
 import { useRef, useState, useEffect } from "react"
 
 export default function TimbreSpaceVisualizer() {
   const showSpectralOverlay = useAudioStore((state) => state.showSpectralOverlay)
+  const showWater = useAudioStore((state) => state.showWater)
   const controlsRef = useRef<any>()
   const [controlsEnabled, setControlsEnabled] = useState(true)
   const [webglContextLost, setWebglContextLost] = useState(false)
@@ -165,20 +167,24 @@ export default function TimbreSpaceVisualizer() {
       <Environment preset="night" />
       <fog attach="fog" args={["#000000", 10, 30]} />
 
-      {/* Grid for spatial reference */}
-      <Grid
-        args={[20, 20]}
-        cellSize={1}
-        cellThickness={0.5}
-        cellColor="#1a1a2e"
-        sectionSize={5}
-        sectionThickness={1}
-        sectionColor="#2a2a4e"
-        fadeDistance={25}
-        fadeStrength={1}
-        followCamera={false}
-        infiniteGrid={true}
-      />
+      {/* Grid or Water for spatial reference */}
+      {showWater ? (
+        <WaterPlane />
+      ) : (
+        <Grid
+          args={[20, 20]}
+          cellSize={1}
+          cellThickness={0.5}
+          cellColor="#1a1a2e"
+          sectionSize={5}
+          sectionThickness={1}
+          sectionColor="#2a2a4e"
+          fadeDistance={25}
+          fadeStrength={1}
+          followCamera={false}
+          infiniteGrid={true}
+        />
+      )}
 
       {/* Axis labels */}
       <AxisLabels />

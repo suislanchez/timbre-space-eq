@@ -19,6 +19,9 @@ interface StemTrack {
   element: HTMLAudioElement
   enabled: boolean
   fileName: string
+  source: MediaElementAudioSourceNode | null
+  gainNode: GainNode | null
+  analyser: AnalyserNode | null
 }
 
 interface AudioStore {
@@ -76,6 +79,7 @@ interface AudioStore {
   showFrequencyGraph: boolean
   showKrumhanslMap: boolean
   showLyrics: boolean
+  showWater: boolean
   dynamicParticles: Array<{
     id: string
     name: string
@@ -86,8 +90,21 @@ interface AudioStore {
     lastActive: number
     isActive: boolean
   }>
+  analysisHistory: Array<{
+    time: number
+    spectralCentroid: number
+    spectralRolloff: number
+    roughness: number
+    zeroCrossingRate: number
+    chord: string
+    chordDegree: string
+    tempo: number
+    beatStrength: number
+    instrumentEnergies: Record<string, number>
+  }>
   seekTo: (positionSeconds: number) => void
   replay: () => void
+  ensureAudioContext: () => Promise<void>
 }
 
 function calculateSpectralCentroid(frequencyData: Uint8Array, sampleRate: number): number {
@@ -414,7 +431,9 @@ export const useAudioStore = create<AudioStore>((set, get) => ({
   showFrequencyGraph: false,
   showKrumhanslMap: false,
   showLyrics: false,
+  showWater: false,
   dynamicParticles: [], // Initialize dynamic particles array
+  analysisHistory: [], // Initialize analysis history
   stems: {
     vocals: null,
     drums: null,
@@ -519,6 +538,46 @@ export const useAudioStore = create<AudioStore>((set, get) => ({
 
         analyser.getByteFrequencyData(frequencyData)
         analyser.getByteTimeDomainData(timeData)
+
+        // Merge frequency data from enabled stems
+        try {
+          const { stems } = get()
+          const enabledStems = Object.values(stems).filter(s => s && s.enabled && s.analyser)
+          
+          if (enabledStems.length > 0) {
+            const stemFrequencyData = new Uint8Array(analyser.frequencyBinCount)
+            let stemCount = 0
+            
+            enabledStems.forEach(stem => {
+              if (stem && stem.analyser) {
+                try {
+                  const stemData = new Uint8Array(stem.analyser.frequencyBinCount)
+                  stem.analyser.getByteFrequencyData(stemData)
+                  
+                  // Add stem data to merged array
+                  const minLength = Math.min(stemData.length, stemFrequencyData.length)
+                  for (let i = 0; i < minLength; i++) {
+                    stemFrequencyData[i] += stemData[i]
+                  }
+                  stemCount++
+                } catch (error) {
+                  console.warn("[v0] Error reading stem frequency data:", error)
+                }
+              }
+            })
+            
+            // Average the stem data and blend with main audio
+            if (stemCount > 0) {
+              for (let i = 0; i < frequencyData.length; i++) {
+                const avgStemValue = stemFrequencyData[i] / stemCount
+                // Blend 70% stems, 30% main audio
+                frequencyData[i] = Math.round(avgStemValue * 0.7 + frequencyData[i] * 0.3)
+              }
+            }
+          }
+        } catch (error) {
+          console.warn("[v0] Error merging stem frequency data:", error)
+        }
 
         const sampleRate = audioContext.sampleRate
       const spectralCentroid = calculateSpectralCentroid(frequencyData, sampleRate)
@@ -695,7 +754,8 @@ export const useAudioStore = create<AudioStore>((set, get) => ({
         }
       }
 
-        set({
+        // Record analysis history every 0.5 seconds for export
+        const stateToUpdate: any = {
           frequencyData: new Uint8Array(frequencyData),
           timeData: new Uint8Array(timeData),
           spectralCentroid,
@@ -703,7 +763,61 @@ export const useAudioStore = create<AudioStore>((set, get) => ({
           roughness,
           zeroCrossingRate,
           rhythmMetrics, // Update rhythm metrics
-        })
+        }
+        
+        try {
+          const { analysisHistory, currentTime: audioTime, currentChord, chordDegree } = get()
+          const lastRecordTime = analysisHistory.length > 0 ? analysisHistory[analysisHistory.length - 1].time : -1
+          
+          if (audioTime - lastRecordTime >= 0.5 && frequencyData && frequencyData.length > 0) {
+            // Calculate instrument energies
+            const instrumentEnergies: Record<string, number> = {}
+            const instruments = [
+              { name: "Kick", freqRange: [20, 150] },
+              { name: "Snare", freqRange: [150, 400] },
+              { name: "Hi-Hat", freqRange: [3000, 8000] },
+              { name: "Bass", freqRange: [40, 250] },
+              { name: "Synth", freqRange: [250, 2000] },
+              { name: "Vocal", freqRange: [300, 3000] },
+              { name: "Guitar", freqRange: [80, 1200] },
+              { name: "Piano", freqRange: [27, 4200] },
+            ]
+            
+            instruments.forEach(inst => {
+              const minBin = Math.floor((inst.freqRange[0] / 22050) * frequencyData.length)
+              const maxBin = Math.floor((inst.freqRange[1] / 22050) * frequencyData.length)
+              let energy = 0
+              for (let i = minBin; i < maxBin; i++) {
+                energy += frequencyData[i] / 255
+              }
+              instrumentEnergies[inst.name] = energy / (maxBin - minBin)
+            })
+            
+            analysisHistory.push({
+              time: audioTime,
+              spectralCentroid,
+              spectralRolloff,
+              roughness,
+              zeroCrossingRate,
+              chord: currentChord,
+              chordDegree,
+              tempo: rhythmMetrics.tempo,
+              beatStrength: rhythmMetrics.beatStrength,
+              instrumentEnergies,
+            })
+            
+            // Keep last 1000 samples (500 seconds at 0.5s intervals)
+            if (analysisHistory.length > 1000) {
+              analysisHistory.shift()
+            }
+            
+            stateToUpdate.analysisHistory = [...analysisHistory]
+          }
+        } catch (error) {
+          console.warn("[v0] Error recording analysis history:", error)
+        }
+
+        set(stateToUpdate)
 
         requestAnimationFrame(updateData)
       }
@@ -1024,32 +1138,124 @@ export const useAudioStore = create<AudioStore>((set, get) => ({
       chordTransitions,
       predictability,
       dynamicParticles,
+      analysisHistory,
+      currentFileName,
     } = get()
-    const data = {
-      timestamp: new Date().toISOString(),
-      eqSettings,
-      instruments: Array.from(timbreFeatures.entries()).map(([name, timbre]) => ({
+    
+    // Calculate per-instrument statistics from analysis history
+    const instrumentNames = ["Kick", "Snare", "Hi-Hat", "Bass", "Synth", "Vocal", "Guitar", "Piano"]
+    const instrumentStats = instrumentNames.map(name => {
+      const energies = analysisHistory.map(h => h.instrumentEnergies[name] || 0)
+      const avgEnergy = energies.length > 0 ? energies.reduce((a, b) => a + b, 0) / energies.length : 0
+      const maxEnergy = energies.length > 0 ? Math.max(...energies) : 0
+      const minEnergy = energies.length > 0 ? Math.min(...energies) : 0
+      
+      // Find peak times (energy > 0.5)
+      const peakTimes = analysisHistory
+        .filter(h => (h.instrumentEnergies[name] || 0) > 0.5)
+        .map(h => h.time)
+      
+      const freqRanges: Record<string, [number, number]> = {
+        "Kick": [20, 150],
+        "Snare": [150, 400],
+        "Hi-Hat": [3000, 8000],
+        "Bass": [40, 250],
+        "Synth": [250, 2000],
+        "Vocal": [300, 3000],
+        "Guitar": [80, 1200],
+        "Piano": [27, 4200],
+      }
+      
+      return {
         name,
-        features: timbre.features,
-        energy: timbre.energy,
-        trajectory: timbre.trajectory,
-      })),
-      frequencySnapshot: frequencyData ? Array.from(frequencyData) : [],
-      currentTime,
-      duration,
-      spectralCentroid,
-      currentChord,
-      currentNote,
-      currentLyrics,
-      songKey,
-      chordDegree,
-      rhythmMetrics,
+        freqRange: freqRanges[name],
+        statistics: {
+          avgEnergy: Number(avgEnergy.toFixed(3)),
+          peakEnergy: Number(maxEnergy.toFixed(3)),
+          minEnergy: Number(minEnergy.toFixed(3)),
+          totalActiveTime: peakTimes.length * 0.5, // 0.5s per sample
+          peakCount: peakTimes.length,
+          peakTimes: peakTimes.slice(0, 10), // First 10 peaks
+        },
+        timeSeries: analysisHistory.map(h => ({
+          time: Number(h.time.toFixed(2)),
+          energy: Number((h.instrumentEnergies[name] || 0).toFixed(3)),
+        })),
+      }
+    })
+    
+    // Calculate overall statistics
+    const avgSpectralCentroid = analysisHistory.length > 0
+      ? analysisHistory.reduce((sum, h) => sum + h.spectralCentroid, 0) / analysisHistory.length
+      : spectralCentroid
+    
+    const avgRoughness = analysisHistory.length > 0
+      ? analysisHistory.reduce((sum, h) => sum + h.roughness, 0) / analysisHistory.length
+      : 0
+    
+    const avgTempo = analysisHistory.length > 0
+      ? analysisHistory.reduce((sum, h) => sum + h.tempo, 0) / analysisHistory.length
+      : rhythmMetrics.tempo
+    
+    // Extract chord progression
+    const chordProgression: Array<{ time: number; chord: string; degree: string; duration: number }> = []
+    let lastChord = ""
+    let lastTime = 0
+    
+    analysisHistory.forEach((h, idx) => {
+      if (h.chord !== lastChord && h.chord !== "---") {
+        if (chordProgression.length > 0) {
+          chordProgression[chordProgression.length - 1].duration = h.time - lastTime
+        }
+        chordProgression.push({
+          time: Number(h.time.toFixed(2)),
+          chord: h.chord,
+          degree: h.chordDegree,
+          duration: 0,
+        })
+        lastChord = h.chord
+        lastTime = h.time
+      }
+    })
+    
+    // Set last chord duration
+    if (chordProgression.length > 0) {
+      chordProgression[chordProgression.length - 1].duration = duration - lastTime
+    }
+    
+    const data = {
+      metadata: {
+        fileName: currentFileName || "unknown",
+        duration: Number(duration.toFixed(2)),
+        analyzedAt: new Date().toISOString(),
+        sampleCount: analysisHistory.length,
+        sampleInterval: 0.5,
+      },
+      instruments: instrumentStats,
+      chordProgression,
+      overallStatistics: {
+        avgSpectralCentroid: Number(avgSpectralCentroid.toFixed(2)),
+        avgRoughness: Number(avgRoughness.toFixed(2)),
+        avgTempo: Number(avgTempo.toFixed(0)),
+        predictability: Number(predictability.toFixed(3)),
+        songKey,
+        totalChordChanges: chordProgression.length,
+      },
+      currentSnapshot: {
+        timestamp: new Date().toISOString(),
+        eqSettings,
+        currentTime: Number(currentTime.toFixed(2)),
+        spectralCentroid,
+        currentChord,
+        currentNote,
+        songKey,
+        chordDegree,
+        rhythmMetrics,
+      },
       chordTransitions: Array.from(chordTransitions.entries()).map(([from, to]) => ({
         from,
         transitions: Array.from(to.entries()).map(([toChord, count]) => ({ toChord, count })),
       })),
-      predictability,
-      dynamicParticles,
     }
     return JSON.stringify(data, null, 2)
   },
@@ -1353,9 +1559,10 @@ export const useAudioStore = create<AudioStore>((set, get) => ({
   toggleFrequencyGraph: () => set((state) => ({ showFrequencyGraph: !state.showFrequencyGraph })),
   toggleKrumhanslMap: () => set((state) => ({ showKrumhanslMap: !state.showKrumhanslMap })),
   toggleLyrics: () => set((state) => ({ showLyrics: !state.showLyrics })),
+  toggleWater: () => set((state) => ({ showWater: !state.showWater })),
 
   loadStemFile: async (stemType: "vocals" | "drums" | "bass" | "other", file: File): Promise<boolean> => {
-    const { audioElement } = get()
+    const { audioElement, audioContext } = get()
     
     // Validate file type
     const validTypes = ["audio/mpeg", "audio/mp3", "audio/wav", "audio/ogg", "audio/webm", "audio/flac", "audio/aac"]
@@ -1369,12 +1576,50 @@ export const useAudioStore = create<AudioStore>((set, get) => ({
     return new Promise((resolve) => {
       const stemElement = new Audio()
       stemElement.crossOrigin = "anonymous"
+      stemElement.volume = 0.7 // Set default volume
       
       const url = URL.createObjectURL(file)
       stemElement.src = url
 
-      const handleCanPlay = () => {
+      const handleCanPlay = async () => {
         console.log("[v0] Stem loaded successfully:", stemType, file.name)
+        
+        let stemSource: MediaElementAudioSourceNode | null = null
+        let stemGain: GainNode | null = null
+        let stemAnalyser: AnalyserNode | null = null
+        
+        // Connect to AudioContext if it exists
+        if (audioContext) {
+          try {
+            // Check if AudioContext is in a valid state
+            if (audioContext.state === "closed") {
+              throw new Error("AudioContext is closed")
+            }
+            
+            stemSource = audioContext.createMediaElementSource(stemElement)
+            stemGain = audioContext.createGain()
+            stemGain.gain.value = 0.7
+            
+            // Create analyser for this stem
+            stemAnalyser = audioContext.createAnalyser()
+            stemAnalyser.fftSize = 2048
+            stemAnalyser.smoothingTimeConstant = 0.8
+            
+            // Connect: source -> gain -> analyser -> destination
+            stemSource.connect(stemGain)
+            stemGain.connect(stemAnalyser)
+            stemAnalyser.connect(audioContext.destination)
+            
+            console.log(`[v0] ${stemType} stem connected to Web Audio API`)
+          } catch (error) {
+            console.warn(`[v0] Could not connect ${stemType} stem to AudioContext:`, error)
+            // Fallback to regular HTML5 audio if Web Audio fails
+            stemElement.volume = 0.7
+            stemSource = null
+            stemGain = null
+            stemAnalyser = null
+          }
+        }
         
         // Sync with main audio if it exists
         if (audioElement) {
@@ -1388,6 +1633,9 @@ export const useAudioStore = create<AudioStore>((set, get) => ({
               element: stemElement,
               enabled: true,
               fileName: file.name,
+              source: stemSource,
+              gainNode: stemGain,
+              analyser: stemAnalyser,
             },
           },
         }))
@@ -1422,16 +1670,26 @@ export const useAudioStore = create<AudioStore>((set, get) => ({
     
     const newEnabled = !stem.enabled
     
-    // If disabling, pause the stem
-    if (!newEnabled && !stem.element.paused) {
-      stem.element.pause()
-    }
-    
-    // If enabling and main audio is playing, play the stem
-    if (newEnabled && isPlaying) {
-      stem.element.play().catch((error) => {
-        console.error("[v0] Failed to play stem:", stemType, error)
-      })
+    try {
+      // Use gain node for mute/unmute if available, otherwise use pause/play
+      if (stem.gainNode && stem.gainNode.context.state !== "closed") {
+        // Smooth fade to prevent clicks
+        const targetGain = newEnabled ? 0.7 : 0
+        stem.gainNode.gain.setTargetAtTime(targetGain, stem.gainNode.context.currentTime, 0.015)
+      } else {
+        // Fallback to pause/play
+        if (!newEnabled && !stem.element.paused) {
+          stem.element.pause()
+        }
+        
+        if (newEnabled && isPlaying) {
+          stem.element.play().catch((error) => {
+            console.error("[v0] Failed to play stem:", stemType, error)
+          })
+        }
+      }
+    } catch (error) {
+      console.error(`[v0] Error toggling stem ${stemType}:`, error)
     }
     
     set((state) => ({
@@ -1445,13 +1703,60 @@ export const useAudioStore = create<AudioStore>((set, get) => ({
     }))
   },
 
+  setStemVolume: (stemType: "vocals" | "drums" | "bass" | "other", volume: number) => {
+    const { stems } = get()
+    const stem = stems[stemType]
+    
+    if (!stem) return
+    
+    const clampedVolume = Math.max(0, Math.min(1, volume))
+    
+    try {
+      // Update gain node if available
+      if (stem.gainNode && stem.gainNode.context.state !== "closed" && stem.enabled) {
+        stem.gainNode.gain.setTargetAtTime(clampedVolume, stem.gainNode.context.currentTime, 0.015)
+      } else {
+        // Fallback to element volume
+        stem.element.volume = clampedVolume
+      }
+    } catch (error) {
+      console.error(`[v0] Error setting volume for ${stemType}:`, error)
+      // Fallback to element volume
+      stem.element.volume = clampedVolume
+    }
+  },
+
   clearStems: () => {
     const { stems } = get()
     
-    // Pause and revoke URLs for all stems
+    // Pause, disconnect, and revoke URLs for all stems
     Object.values(stems).forEach((stem) => {
       if (stem) {
         stem.element.pause()
+        
+        // Disconnect Web Audio nodes
+        if (stem.source) {
+          try {
+            stem.source.disconnect()
+          } catch (e) {
+            console.warn("[v0] Error disconnecting stem source:", e)
+          }
+        }
+        if (stem.gainNode) {
+          try {
+            stem.gainNode.disconnect()
+          } catch (e) {
+            console.warn("[v0] Error disconnecting stem gain:", e)
+          }
+        }
+        if (stem.analyser) {
+          try {
+            stem.analyser.disconnect()
+          } catch (e) {
+            console.warn("[v0] Error disconnecting stem analyser:", e)
+          }
+        }
+        
         if (stem.element.src && stem.element.src.startsWith("blob:")) {
           URL.revokeObjectURL(stem.element.src)
         }

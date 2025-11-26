@@ -65,13 +65,16 @@ export default function AudioControls() {
     showClusters,
     showSpectralOverlay,
     showLyrics,
+    showWater,
     stems,
     toggleTrails,
     toggleClusters,
     toggleSpectralOverlay,
     toggleLyrics,
+    toggleWater,
     loadStemFile,
     toggleStem,
+    setStemVolume,
     exportTimbreData,
     seekTo,
     replay,
@@ -154,20 +157,37 @@ export default function AudioControls() {
     const data = JSON.parse(exportTimbreData())
     
     // Create CSV header
-    let csv = "Timestamp,Instrument,Energy,SpectralCentroid,Brightness,Roughness,Frequency,Chord,Note,Key,Degree\n"
+    let csv = "Time,Instrument,AvgEnergy,PeakEnergy,ActiveTime,SpectralCentroid,Roughness,Tempo,Chord,ChordDegree,Key\n"
     
-    // Add timbre features
+    // Add per-instrument statistics
     if (data.instruments && data.instruments.length > 0) {
       data.instruments.forEach((inst: any) => {
-        const timestamp = data.timestamp || new Date().toISOString()
-        csv += `${timestamp},"${inst.name}",${inst.energy},${inst.features.spectralCentroid},${inst.features.brightness},${inst.features.roughness},${inst.features.spectralCentroid},"${data.currentChord || "---"}","${data.currentNote || "---"}","${data.songKey || "---"}","${data.chordDegree || "---"}"\n`
+        csv += `"Full Song","${inst.name}",${inst.statistics.avgEnergy},${inst.statistics.peakEnergy},${inst.statistics.totalActiveTime},${data.overallStatistics.avgSpectralCentroid},${data.overallStatistics.avgRoughness},${data.overallStatistics.avgTempo},"${data.overallStatistics.songKey}","","${data.overallStatistics.songKey}"\n`
       })
     }
     
-    // Add current state if no instruments
-    if (!data.instruments || data.instruments.length === 0) {
-      const timestamp = data.timestamp || new Date().toISOString()
-      csv += `${timestamp},"Current",${data.currentTime || 0},${data.spectralCentroid || 0},${((data.spectralCentroid || 0) / 11025) * 100},0,${data.spectralCentroid || 0},"${data.currentChord || "---"}","${data.currentNote || "---"}","${data.songKey || "---"}","${data.chordDegree || "---"}"\n`
+    // Add time-series data for each instrument
+    csv += "\n\nTime Series Data\n"
+    csv += "Time,Instrument,Energy\n"
+    
+    if (data.instruments && data.instruments.length > 0) {
+      data.instruments.forEach((inst: any) => {
+        if (inst.timeSeries && inst.timeSeries.length > 0) {
+          inst.timeSeries.forEach((sample: any) => {
+            csv += `${sample.time},"${inst.name}",${sample.energy}\n`
+          })
+        }
+      })
+    }
+    
+    // Add chord progression
+    csv += "\n\nChord Progression\n"
+    csv += "Time,Chord,Degree,Duration\n"
+    
+    if (data.chordProgression && data.chordProgression.length > 0) {
+      data.chordProgression.forEach((chord: any) => {
+        csv += `${chord.time},"${chord.chord}","${chord.degree}",${chord.duration}\n`
+      })
     }
     
     const blob = new Blob([csv], { type: "text/csv" })
@@ -180,7 +200,7 @@ export default function AudioControls() {
 
     toast({
       title: "Data Exported",
-      description: "Timbre analysis data has been downloaded as CSV.",
+      description: "Comprehensive timbre analysis data has been downloaded as CSV.",
     })
   }
 
@@ -532,6 +552,18 @@ export default function AudioControls() {
                     />
                   </div>
 
+                  <div className="flex items-center gap-2">
+                    <label htmlFor="water-collapsed" className="text-xs text-muted-foreground cursor-pointer">
+                      Water
+                    </label>
+                    <Switch
+                      id="water-collapsed"
+                      checked={showWater}
+                      onCheckedChange={toggleWater}
+                      className="scale-75"
+                    />
+                  </div>
+
                   <div className="flex items-center gap-2 border-l border-border/50 pl-4">
                     <Button
                       size="sm"
@@ -678,26 +710,44 @@ export default function AudioControls() {
 
                   {stemsLoaded && (
                     <div className="flex-1 border-l border-border/50 pl-4">
-                      <div className="text-xs font-semibold mb-2 text-muted-foreground">Stems</div>
-                      <div className="grid grid-cols-2 gap-2">
+                      <div className="text-xs font-semibold mb-2 text-muted-foreground">
+                        Stems ({Object.values(stems).filter(s => s !== null).length}/4)
+                      </div>
+                      <div className="grid grid-cols-2 gap-3">
                         {(["vocals", "drums", "bass", "other"] as const).map((stemType) => {
                           const stem = stems[stemType]
-                          if (!stem) return null
 
                           return (
-                            <div key={stemType} className="flex items-center gap-2">
-                              <Switch
-                                id={`stem-${stemType}`}
-                                checked={stem.enabled}
-                                onCheckedChange={() => toggleStem(stemType)}
-                                className="scale-75"
-                              />
-                              <label
-                                htmlFor={`stem-${stemType}`}
-                                className="text-xs text-muted-foreground cursor-pointer capitalize"
-                              >
-                                {stemType}
-                              </label>
+                            <div key={stemType} className="flex flex-col gap-1">
+                              <div className="flex items-center gap-2">
+                                <Switch
+                                  id={`stem-${stemType}`}
+                                  checked={stem?.enabled ?? false}
+                                  onCheckedChange={() => toggleStem(stemType)}
+                                  disabled={!stem}
+                                  className="scale-75"
+                                />
+                                <label
+                                  htmlFor={`stem-${stemType}`}
+                                  className={`text-xs cursor-pointer capitalize flex items-center gap-1 ${
+                                    stem ? 'text-foreground' : 'text-muted-foreground'
+                                  }`}
+                                  title={stem?.fileName}
+                                >
+                                  {stemType}
+                                  {stem && <span className="text-green-500 text-[10px]">✓</span>}
+                                </label>
+                              </div>
+                              {stem && (
+                                <Slider
+                                  value={[stem.gainNode ? stem.gainNode.gain.value * 100 : 70]}
+                                  onValueChange={([v]) => setStemVolume(stemType, v / 100)}
+                                  max={100}
+                                  step={1}
+                                  disabled={!stem.enabled}
+                                  className="h-1"
+                                />
+                              )}
                             </div>
                           )
                         })}
