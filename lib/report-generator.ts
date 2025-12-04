@@ -204,9 +204,19 @@ export function generateHTMLReport(analysisData: any): string {
       <canvas id="instrumentChart"></canvas>
     </div>
 
-    <h3>Sync Index Over Time</h3>
+    <h3>Chord Progression Over Time</h3>
     <div class="chart-container">
-      <canvas id="syncIndexChart"></canvas>
+      <canvas id="chordProgressionChart"></canvas>
+    </div>
+
+    <h3>Pattern Density by Time Segment</h3>
+    <div class="chart-container">
+      <canvas id="patternDensityChart"></canvas>
+    </div>
+
+    <h3>Musical Characteristics Profile (Radar Chart)</h3>
+    <div class="chart-container">
+      <canvas id="radarChart"></canvas>
     </div>
 
     <h2>Pattern Detection Results</h2>
@@ -395,20 +405,105 @@ export function generateHTMLReport(analysisData: any): string {
       }
     });
 
-    // Chart 3: Sync Index Over Time
-    const syncIndexCtx = document.getElementById('syncIndexChart').getContext('2d');
-    new Chart(syncIndexCtx, {
+    // Chart 3: Chord Progression (Stacked Area)
+    const chordProgressionData = {};
+    timeSeries.forEach(d => {
+      const window = Math.floor(d.time / 5) * 5;
+      if (!chordProgressionData[window]) chordProgressionData[window] = {};
+      const chord = d.chord !== '---' ? d.chord : 'Silence';
+      chordProgressionData[window][chord] = (chordProgressionData[window][chord] || 0) + 1;
+    });
+    
+    const chordWindows = Object.entries(chordProgressionData).map(([time, chords]) => ({
+      time: Number(time),
+      ...chords
+    }));
+    
+    const allChords = [...new Set(timeSeries.map(d => d.chord !== '---' ? d.chord : 'Silence'))].slice(0, 8);
+    const chordColors = ['#3b82f6', '#ef4444', '#22c55e', '#f59e0b', '#a855f7', '#06b6d4', '#f97316', '#84cc16'];
+    
+    const chordProgressionCtx = document.getElementById('chordProgressionChart').getContext('2d');
+    new Chart(chordProgressionCtx, {
       type: 'line',
       data: {
-        labels: timeSeries.map(d => d.time.toFixed(1)),
+        labels: chordWindows.map(d => d.time),
+        datasets: allChords.map((chord, idx) => ({
+          label: chord,
+          data: chordWindows.map(d => d[chord] || 0),
+          borderColor: chordColors[idx % chordColors.length],
+          backgroundColor: chordColors[idx % chordColors.length] + '80',
+          fill: true,
+          tension: 0.4,
+          stack: 'chords'
+        }))
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        scales: {
+          x: { stacked: true },
+          y: { stacked: true, beginAtZero: true }
+        },
+        plugins: {
+          legend: { display: true }
+        }
+      }
+    });
+
+    // Chart 4: Pattern Density (Stacked Bar)
+    const patternBins = {};
+    const binSize = 10;
+    
+    patterns.syncMoments.forEach(m => {
+      const bin = Math.floor(m.time / binSize) * binSize;
+      if (!patternBins[bin]) patternBins[bin] = { sync: 0, surprises: 0, events: 0 };
+      patternBins[bin].sync++;
+    });
+    
+    patterns.harmonicSurprises.forEach(s => {
+      const bin = Math.floor(s.time / binSize) * binSize;
+      if (!patternBins[bin]) patternBins[bin] = { sync: 0, surprises: 0, events: 0 };
+      patternBins[bin].surprises++;
+    });
+    
+    patterns.timbralEvents.forEach(e => {
+      const bin = Math.floor(e.time / binSize) * binSize;
+      if (!patternBins[bin]) patternBins[bin] = { sync: 0, surprises: 0, events: 0 };
+      patternBins[bin].events++;
+    });
+    
+    const patternDensityData = Object.entries(patternBins)
+      .map(([time, counts]) => ({
+        time: time + '-' + (Number(time) + binSize) + 's',
+        sync: counts.sync,
+        surprises: counts.surprises,
+        events: counts.events
+      }))
+      .sort((a, b) => a.time.localeCompare(b.time));
+    
+    const patternDensityCtx = document.getElementById('patternDensityChart').getContext('2d');
+    new Chart(patternDensityCtx, {
+      type: 'bar',
+      data: {
+        labels: patternDensityData.map(d => d.time),
         datasets: [
           {
-            label: 'Sync Index',
-            data: timeSeries.map(d => d.syncIndex),
-            borderColor: '#a855f7',
-            backgroundColor: 'rgba(168, 85, 247, 0.1)',
-            tension: 0.4,
-            borderWidth: 2
+            label: 'Sync Moments',
+            data: patternDensityData.map(d => d.sync),
+            backgroundColor: '#f59e0b',
+            stack: 'patterns'
+          },
+          {
+            label: 'Harmonic Surprises',
+            data: patternDensityData.map(d => d.surprises),
+            backgroundColor: '#ef4444',
+            stack: 'patterns'
+          },
+          {
+            label: 'Timbral Events',
+            data: patternDensityData.map(d => d.events),
+            backgroundColor: '#06b6d4',
+            stack: 'patterns'
           }
         ]
       },
@@ -416,7 +511,72 @@ export function generateHTMLReport(analysisData: any): string {
         responsive: true,
         maintainAspectRatio: false,
         scales: {
-          y: { beginAtZero: true, max: 1 }
+          x: { stacked: true },
+          y: { stacked: true, beginAtZero: true }
+        },
+        plugins: {
+          legend: { display: true }
+        }
+      }
+    });
+
+    // Chart 5: Radar Chart (Musical Characteristics)
+    const overallStats = ${JSON.stringify(overallStatistics)};
+    const radarData = [
+      {
+        subject: 'Brightness',
+        value: Math.min(1, (overallStats.syncIndex || 0) * 1.2)
+      },
+      {
+        subject: 'Complexity',
+        value: Math.min(1, 1 - (overallStats.predictability || 0))
+      },
+      {
+        subject: 'Harmony',
+        value: Math.min(1, (overallStats.harmonicRhythm || 0) / 20)
+      },
+      {
+        subject: 'Diversity',
+        value: Math.min(1, (overallStats.timbralSpread || 0) * 2)
+      },
+      {
+        subject: 'Coherence',
+        value: Math.min(1, (overallStats.syncIndex || 0))
+      },
+      {
+        subject: 'Activity',
+        value: Math.min(1, (overallStats.syncMomentsCount + overallStats.timbralEventsCount) / 50)
+      }
+    ];
+    
+    const radarCtx = document.getElementById('radarChart').getContext('2d');
+    new Chart(radarCtx, {
+      type: 'radar',
+      data: {
+        labels: radarData.map(d => d.subject),
+        datasets: [{
+          label: 'Song Profile',
+          data: radarData.map(d => d.value),
+          borderColor: '#3b82f6',
+          backgroundColor: 'rgba(59, 130, 246, 0.2)',
+          borderWidth: 2,
+          pointBackgroundColor: '#3b82f6',
+          pointBorderColor: '#fff',
+          pointHoverBackgroundColor: '#fff',
+          pointHoverBorderColor: '#3b82f6'
+        }]
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        scales: {
+          r: {
+            beginAtZero: true,
+            max: 1,
+            ticks: {
+              stepSize: 0.2
+            }
+          }
         },
         plugins: {
           legend: { display: true }

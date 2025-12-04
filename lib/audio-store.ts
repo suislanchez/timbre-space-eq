@@ -1134,29 +1134,35 @@ export const useAudioStore = create<AudioStore>((set, get) => ({
               instantSyncIndex = calculateInstantSync(currentSample, analysisHistory)
             }
             
-            analysisHistory.push({
-              time: audioTime,
-              spectralCentroid,
-              spectralRolloff,
-              roughness,
-              zeroCrossingRate,
-              chord: currentChord,
-              chordDegree,
-              tempo: rhythmMetrics.tempo,
-              beatStrength: rhythmMetrics.beatStrength,
-              instrumentEnergies,
-              instantSyncIndex,
-              harmonicEnergy,
-              timbralVariance,
-              predictability,
-            })
-            
-            // Keep last 1000 samples (500 seconds at 0.5s intervals)
-            if (analysisHistory.length > 1000) {
-              analysisHistory.shift()
+            // Only record if time is progressing forward (prevents issues when seeking or loading new songs)
+            const { duration: songDuration } = get()
+            if (audioTime >= 0 && (songDuration === 0 || audioTime <= songDuration + 1)) {
+              analysisHistory.push({
+                time: audioTime,
+                spectralCentroid,
+                spectralRolloff,
+                roughness,
+                zeroCrossingRate,
+                chord: currentChord,
+                chordDegree,
+                tempo: rhythmMetrics.tempo,
+                beatStrength: rhythmMetrics.beatStrength,
+                instrumentEnergies,
+                instantSyncIndex,
+                harmonicEnergy,
+                timbralVariance,
+                predictability,
+              })
+              
+              // Remove any samples that are beyond the current song duration (safety check)
+              // This handles edge cases but shouldn't normally be needed since history is cleared on new file
+              if (songDuration > 0) {
+                const validHistory = analysisHistory.filter(h => h.time <= songDuration)
+                stateToUpdate.analysisHistory = [...validHistory]
+              } else {
+                stateToUpdate.analysisHistory = [...analysisHistory]
+              }
             }
-            
-            stateToUpdate.analysisHistory = [...analysisHistory]
           }
         } catch (error) {
           console.warn("[v0] Error recording analysis history:", error)
@@ -1363,6 +1369,7 @@ export const useAudioStore = create<AudioStore>((set, get) => ({
           songKey: "---",
           chordDegree: "---",
           dynamicParticles: [], // Reset dynamic particles on new file
+          analysisHistory: [], // Reset analysis history for new song
           rhythmMetrics: {
             tempo: 120,
             beatStrength: 0,
@@ -1385,6 +1392,7 @@ export const useAudioStore = create<AudioStore>((set, get) => ({
           currentLyrics: "♪ Failed to load",
           songKey: "---",
           chordDegree: "---",
+          analysisHistory: [], // Reset analysis history on error
           rhythmMetrics: {
             tempo: 120,
             beatStrength: 0,

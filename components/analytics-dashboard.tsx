@@ -4,6 +4,15 @@ import { useMemo } from "react"
 import {
   LineChart,
   Line,
+  AreaChart,
+  Area,
+  BarChart,
+  Bar,
+  RadarChart,
+  PolarGrid,
+  PolarAngleAxis,
+  PolarRadiusAxis,
+  Radar,
   XAxis,
   YAxis,
   CartesianGrid,
@@ -56,28 +65,92 @@ export default function AnalyticsDashboard({ onClose }: AnalyticsDashboardProps)
     ...d.instrumentEnergies,
   }))
 
-  // Prepare data for Graph 3: Harmonic Complexity
-  const harmonicData = timeSeries.map((d, idx) => {
-    const prev = idx > 0 ? timeSeries[idx - 1] : d
-    const chordChanged = d.chord !== prev.chord && d.chord !== "---" ? 1 : 0
-    return {
-      time: d.time,
-      chordChangeRate: chordChanged,
-      keyStability: overallStatistics.keyStability || 0,
-      harmonicEntropy: d.harmonicEnergy * 0.5, // Simplified
-    }
-  })
+  // Prepare data for Graph 3: Chord Progression Stacked Area
+  const chordProgressionData = useMemo(() => {
+    // Group by time windows and count chord occurrences
+    const windows: Record<number, Record<string, number>> = {}
+    timeSeries.forEach((d) => {
+      const window = Math.floor(d.time / 5) * 5 // 5-second windows
+      if (!windows[window]) windows[window] = {}
+      const chord = d.chord !== "---" ? d.chord : "Silence"
+      windows[window][chord] = (windows[window][chord] || 0) + 1
+    })
+    
+    return Object.entries(windows).map(([time, chords]) => ({
+      time: Number(time),
+      ...chords,
+    }))
+  }, [timeSeries])
 
-  // Prepare data for Graph 4: Sync Index Over Time
-  const syncIndexData = timeSeries.map((d) => ({
-    time: d.time,
-    syncIndex: d.syncIndex,
-  }))
+  // Prepare data for Graph 4: Pattern Density Bar Chart
+  const patternDensityData = useMemo(() => {
+    const bins: Record<number, { sync: number; surprises: number; events: number }> = {}
+    const binSize = 10 // 10-second bins
+    
+    patterns.syncMoments.forEach((m) => {
+      const bin = Math.floor(m.time / binSize) * binSize
+      if (!bins[bin]) bins[bin] = { sync: 0, surprises: 0, events: 0 }
+      bins[bin].sync++
+    })
+    
+    patterns.harmonicSurprises.forEach((s) => {
+      const bin = Math.floor(s.time / binSize) * binSize
+      if (!bins[bin]) bins[bin] = { sync: 0, surprises: 0, events: 0 }
+      bins[bin].surprises++
+    })
+    
+    patterns.timbralEvents.forEach((e) => {
+      const bin = Math.floor(e.time / binSize) * binSize
+      if (!bins[bin]) bins[bin] = { sync: 0, surprises: 0, events: 0 }
+      bins[bin].events++
+    })
+    
+    return Object.entries(bins)
+      .map(([time, counts]) => ({
+        time: `${Number(time)}-${Number(time) + binSize}s`,
+        "Sync Moments": counts.sync,
+        "Harmonic Surprises": counts.surprises,
+        "Timbral Events": counts.events,
+      }))
+      .sort((a, b) => a.time.localeCompare(b.time))
+  }, [patterns])
 
-  // Get sync moment times for markers
+  // Prepare data for Radar Chart: Overall Musical Characteristics
+  const radarData = [
+    {
+      subject: "Brightness",
+      value: Math.min(1, (overallStatistics.syncIndex || 0) * 1.2),
+      fullMark: 1,
+    },
+    {
+      subject: "Complexity",
+      value: Math.min(1, 1 - (overallStatistics.predictability || 0)),
+      fullMark: 1,
+    },
+    {
+      subject: "Harmony",
+      value: Math.min(1, (overallStatistics.harmonicRhythm || 0) / 20),
+      fullMark: 1,
+    },
+    {
+      subject: "Diversity",
+      value: Math.min(1, (overallStatistics.timbralSpread || 0) * 2),
+      fullMark: 1,
+    },
+    {
+      subject: "Coherence",
+      value: Math.min(1, (overallStatistics.syncIndex || 0)),
+      fullMark: 1,
+    },
+    {
+      subject: "Activity",
+      value: Math.min(1, (patterns.syncMoments.length + patterns.timbralEvents.length) / 50),
+      fullMark: 1,
+    },
+  ]
+
+  // Get sync moment times for markers (used in Graph 1)
   const syncMomentTimes = patterns.syncMoments.map((m) => m.time)
-  const surpriseTimes = patterns.harmonicSurprises.map((s) => s.time)
-  const timbralEventTimes = patterns.timbralEvents.map((e) => e.time)
 
   return (
     <div className="space-y-6 p-6 max-h-[90vh] overflow-y-auto">
@@ -221,74 +294,103 @@ export default function AnalyticsDashboard({ onClose }: AnalyticsDashboardProps)
         </ResponsiveContainer>
       </Card>
 
-      {/* Graph 3: Harmonic Complexity */}
+      {/* Graph 3: Chord Progression Stacked Area */}
       <Card className="p-4">
-        <h3 className="text-lg font-semibold mb-4">Harmonic Complexity Over Time</h3>
+        <h3 className="text-lg font-semibold mb-4">Chord Progression Over Time</h3>
         <ResponsiveContainer width="100%" height={300}>
-          <LineChart data={harmonicData}>
+          <AreaChart data={chordProgressionData}>
             <CartesianGrid strokeDasharray="3 3" />
             <XAxis dataKey="time" label={{ value: "Time (seconds)", position: "insideBottom", offset: -5 }} />
-            <YAxis label={{ value: "Complexity", angle: -90, position: "insideLeft" }} />
+            <YAxis label={{ value: "Occurrences", angle: -90, position: "insideLeft" }} />
             <Tooltip />
             <Legend />
-            <Line
-              type="monotone"
-              dataKey="chordChangeRate"
-              stroke="#ef4444"
-              name="Chord Change Rate"
-              dot={false}
-            />
-            <Line
-              type="monotone"
-              dataKey="keyStability"
-              stroke="#3b82f6"
-              name="Key Stability"
-              dot={false}
-            />
-            <Line
-              type="monotone"
-              dataKey="harmonicEntropy"
-              stroke="#22c55e"
-              name="Harmonic Entropy"
-              dot={false}
-            />
-            {surpriseTimes.map((time) => (
-              <ReferenceLine key={time} x={time} stroke="#f59e0b" strokeDasharray="2 2" />
-            ))}
-          </LineChart>
+            {/* Dynamically render areas for each chord */}
+            {Object.keys(chordProgressionData[0] || {})
+              .filter((key) => key !== "time")
+              .slice(0, 8) // Limit to top 8 chords to avoid clutter
+              .map((chord, idx) => {
+                const colors = [
+                  "#3b82f6",
+                  "#ef4444",
+                  "#22c55e",
+                  "#f59e0b",
+                  "#a855f7",
+                  "#06b6d4",
+                  "#f97316",
+                  "#84cc16",
+                ]
+                return (
+                  <Area
+                    key={chord}
+                    type="monotone"
+                    dataKey={chord}
+                    stackId="1"
+                    stroke={colors[idx % colors.length]}
+                    fill={colors[idx % colors.length]}
+                    fillOpacity={0.6}
+                  />
+                )
+              })}
+          </AreaChart>
         </ResponsiveContainer>
+        <p className="text-xs text-muted-foreground mt-2">
+          Shows chord distribution in 5-second windows. Top 8 most frequent chords displayed.
+        </p>
       </Card>
 
-      {/* Graph 4: Sync Index Over Time */}
+      {/* Graph 4: Pattern Density Bar Chart */}
       <Card className="p-4">
-        <h3 className="text-lg font-semibold mb-4">Sync Index Over Time</h3>
+        <h3 className="text-lg font-semibold mb-4">Pattern Density by Time Segment</h3>
         <ResponsiveContainer width="100%" height={300}>
-          <LineChart data={syncIndexData}>
+          <BarChart data={patternDensityData}>
             <CartesianGrid strokeDasharray="3 3" />
-            <XAxis dataKey="time" label={{ value: "Time (seconds)", position: "insideBottom", offset: -5 }} />
-            <YAxis label={{ value: "Sync Index", angle: -90, position: "insideLeft" }} />
+            <XAxis dataKey="time" angle={-45} textAnchor="end" height={80} />
+            <YAxis label={{ value: "Count", angle: -90, position: "insideLeft" }} />
             <Tooltip />
             <Legend />
-            <Line
-              type="monotone"
-              dataKey="syncIndex"
-              stroke="#a855f7"
-              name="Sync Index"
-              strokeWidth={2}
-              dot={false}
-            />
-            {syncMomentTimes.map((time) => (
-              <ReferenceLine key={time} x={time} stroke="#f59e0b" strokeDasharray="2 2" />
-            ))}
-            {timbralEventTimes.map((time) => (
-              <ReferenceLine key={time} x={time} stroke="#06b6d4" strokeDasharray="1 1" />
-            ))}
-          </LineChart>
+            <Bar dataKey="Sync Moments" stackId="a" fill="#f59e0b" />
+            <Bar dataKey="Harmonic Surprises" stackId="a" fill="#ef4444" />
+            <Bar dataKey="Timbral Events" stackId="a" fill="#06b6d4" />
+          </BarChart>
         </ResponsiveContainer>
-        <div className="mt-2 text-xs text-muted-foreground">
-          <span className="inline-block w-4 h-0.5 bg-[#f59e0b] mr-1"></span> Sync Moments
-          <span className="inline-block w-4 h-0.5 bg-[#06b6d4] ml-4 mr-1"></span> Timbral Events
-        </div>
+        <p className="text-xs text-muted-foreground mt-2">
+          Stacked bars showing pattern occurrences in 10-second time segments.
+        </p>
+      </Card>
+
+      {/* Graph 5: Hexagonal Radar Chart */}
+      <Card className="p-4">
+        <h3 className="text-lg font-semibold mb-4">Musical Characteristics Profile</h3>
+        <ResponsiveContainer width="100%" height={400}>
+          <RadarChart data={radarData}>
+            <PolarGrid stroke="#e5e7eb" />
+            <PolarAngleAxis
+              dataKey="subject"
+              tick={{ fill: "#6b7280", fontSize: 12 }}
+              className="text-xs"
+            />
+            <PolarRadiusAxis
+              angle={90}
+              domain={[0, 1]}
+              tick={{ fill: "#9ca3af", fontSize: 10 }}
+            />
+            <Radar
+              name="Song Profile"
+              dataKey="value"
+              stroke="#3b82f6"
+              fill="#3b82f6"
+              fillOpacity={0.6}
+              strokeWidth={2}
+            />
+            <Tooltip
+              formatter={(value: number) => [(value * 100).toFixed(1) + "%", "Value"]}
+            />
+            <Legend />
+          </RadarChart>
+        </ResponsiveContainer>
+        <p className="text-xs text-muted-foreground mt-2">
+          Hexagonal radar chart showing overall musical characteristics. Each axis represents a different musical dimension.
+        </p>
       </Card>
     </div>
   )
