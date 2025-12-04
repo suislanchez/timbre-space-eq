@@ -101,6 +101,10 @@ interface AudioStore {
     tempo: number
     beatStrength: number
     instrumentEnergies: Record<string, number>
+    instantSyncIndex?: number
+    harmonicEnergy?: number
+    timbralVariance?: number
+    predictability?: number
   }>
   seekTo: (positionSeconds: number) => void
   replay: () => void
@@ -325,6 +329,325 @@ function calculateRhythmMetrics(
   const syncopation = Math.min(1, variation / 5000)
 
   return { tempo, beatStrength, syncopation }
+}
+
+// ========== Analytics & Pattern Detection Functions ==========
+
+function calculateVariance(array: number[]): number {
+  if (array.length === 0) return 0
+  const mean = array.reduce((sum, val) => sum + val, 0) / array.length
+  const squaredDiffs = array.map(val => Math.pow(val - mean, 2))
+  return squaredDiffs.reduce((sum, val) => sum + val, 0) / array.length
+}
+
+function correlation(array1: number[], array2: number[]): number {
+  if (array1.length !== array2.length || array1.length === 0) return 0
+  
+  const mean1 = array1.reduce((sum, val) => sum + val, 0) / array1.length
+  const mean2 = array2.reduce((sum, val) => sum + val, 0) / array2.length
+  
+  let numerator = 0
+  let sumSq1 = 0
+  let sumSq2 = 0
+  
+  for (let i = 0; i < array1.length; i++) {
+    const diff1 = array1[i] - mean1
+    const diff2 = array2[i] - mean2
+    numerator += diff1 * diff2
+    sumSq1 += diff1 * diff1
+    sumSq2 += diff2 * diff2
+  }
+  
+  const denominator = Math.sqrt(sumSq1 * sumSq2)
+  if (denominator === 0) return 0
+  
+  const corr = numerator / denominator
+  return isNaN(corr) || !isFinite(corr) ? 0 : corr
+}
+
+function calculateSyncIndex(analysisHistory: Array<{
+  time: number
+  spectralCentroid: number
+  chord: string
+  [key: string]: any
+}>): number {
+  if (analysisHistory.length < 2) return 0
+  
+  const timbralChanges: number[] = []
+  const harmonicChanges: number[] = []
+  
+  for (let i = 1; i < analysisHistory.length; i++) {
+    const prev = analysisHistory[i - 1]
+    const curr = analysisHistory[i]
+    
+    // Timbral change = change in spectral centroid (normalized)
+    const timbralChange = Math.abs(curr.spectralCentroid - prev.spectralCentroid) / 5000 // Normalize
+    timbralChanges.push(timbralChange)
+    
+    // Harmonic change = 1 if chord changed, 0 if same
+    const harmonicChange = curr.chord !== prev.chord && curr.chord !== "---" && prev.chord !== "---" ? 1 : 0
+    harmonicChanges.push(harmonicChange)
+  }
+  
+  return correlation(timbralChanges, harmonicChanges)
+}
+
+function calculateInstantSync(
+  current: { time: number; spectralCentroid: number; chord: string },
+  history: Array<{ time: number; spectralCentroid: number; chord: string; [key: string]: any }>
+): number {
+  const window = 2.5 // 2.5 seconds window
+  const startIdx = history.findIndex(h => h.time >= current.time - window)
+  const endIdx = history.findIndex(h => h.time > current.time)
+  
+  if (startIdx === -1 || endIdx === -1 || endIdx - startIdx < 2) return 0
+  
+  const windowData = history.slice(startIdx, endIdx)
+  if (windowData.length < 2) return 0
+  
+  const timbralChanges: number[] = []
+  const harmonicChanges: number[] = []
+  
+  for (let i = 1; i < windowData.length; i++) {
+    const prev = windowData[i - 1]
+    const curr = windowData[i]
+    
+    timbralChanges.push(Math.abs(curr.spectralCentroid - prev.spectralCentroid) / 5000)
+    harmonicChanges.push(curr.chord !== prev.chord && curr.chord !== "---" && prev.chord !== "---" ? 1 : 0)
+  }
+  
+  return correlation(timbralChanges, harmonicChanges)
+}
+
+function calculateTimbralSpread(history: Array<{ instrumentEnergies: Record<string, number> }>): number {
+  if (history.length === 0) return 0
+  
+  let totalSpread = 0
+  let count = 0
+  
+  history.forEach(h => {
+    const energies = Object.values(h.instrumentEnergies || {}) as number[]
+    if (energies.length > 1) {
+      const variance = calculateVariance(energies)
+      totalSpread += variance
+      count++
+    }
+  })
+  
+  return count > 0 ? totalSpread / count : 0
+}
+
+function calculateHarmonicRhythm(history: Array<{ time: number; chord: string }>): number {
+  if (history.length < 2) return 0
+  
+  let chordChanges = 0
+  let totalTime = 0
+  
+  for (let i = 1; i < history.length; i++) {
+    const prev = history[i - 1]
+    const curr = history[i]
+    const timeDiff = curr.time - prev.time
+    totalTime += timeDiff
+    
+    if (curr.chord !== prev.chord && curr.chord !== "---" && prev.chord !== "---") {
+      chordChanges++
+    }
+  }
+  
+  // Return chord changes per minute
+  return totalTime > 0 ? (chordChanges / totalTime) * 60 : 0
+}
+
+function calculatePhaseLag(history: Array<{ time: number; spectralCentroid: number; chord: string }>): number {
+  if (history.length < 10) return 0
+  
+  // Find timbral peaks (local maxima in spectral centroid)
+  const timbralPeaks: number[] = []
+  for (let i = 1; i < history.length - 1; i++) {
+    const prev = history[i - 1]
+    const curr = history[i]
+    const next = history[i + 1]
+    
+    if (curr.spectralCentroid > prev.spectralCentroid && curr.spectralCentroid > next.spectralCentroid) {
+      timbralPeaks.push(curr.time)
+    }
+  }
+  
+  // Find harmonic changes
+  const harmonicChanges: number[] = []
+  for (let i = 1; i < history.length; i++) {
+    if (history[i].chord !== history[i - 1].chord && history[i].chord !== "---") {
+      harmonicChanges.push(history[i].time)
+    }
+  }
+  
+  if (timbralPeaks.length === 0 || harmonicChanges.length === 0) return 0
+  
+  // Calculate average lag between timbral peaks and nearest harmonic change
+  let totalLag = 0
+  let count = 0
+  
+  timbralPeaks.forEach(peakTime => {
+    const nearestHarmonic = harmonicChanges.reduce((closest, hTime) => {
+      const dist = Math.abs(hTime - peakTime)
+      const closestDist = Math.abs(closest - peakTime)
+      return dist < closestDist ? hTime : closest
+    }, harmonicChanges[0])
+    
+    totalLag += Math.abs(nearestHarmonic - peakTime)
+    count++
+  })
+  
+  return count > 0 ? totalLag / count : 0
+}
+
+function calculateHarmonicEnergy(chordData: { chord: string; chordDegree: string }): number {
+  if (!chordData.chord || chordData.chord === "---") return 0
+  
+  // Convert chord to energy value (0-1)
+  // Major chords = higher energy, minor = lower, complex = medium
+  if (chordData.chord.includes("m7") || chordData.chord.includes("dim")) return 0.3
+  if (chordData.chord.includes("m")) return 0.5
+  if (chordData.chord.includes("7")) return 0.7
+  if (chordData.chord.includes("sus") || chordData.chord.includes("add")) return 0.6
+  return 0.8 // Major chords
+}
+
+function calculateTimbralVariance(sample: { instrumentEnergies: Record<string, number> }): number {
+  const energies = Object.values(sample.instrumentEnergies || {}) as number[]
+  if (energies.length < 2) return 0
+  return calculateVariance(energies)
+}
+
+function calculateChordSurprise(prevChord: string, currChord: string): number {
+  if (prevChord === "---" || currChord === "---") return 0
+  
+  const NOTE_NAMES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"]
+  
+  const prevRoot = prevChord.match(/^[A-G]#?/)?.[0] || ""
+  const currRoot = currChord.match(/^[A-G]#?/)?.[0] || ""
+  
+  if (!prevRoot || !currRoot) return 0
+  
+  const prevIdx = NOTE_NAMES.indexOf(prevRoot)
+  const currIdx = NOTE_NAMES.indexOf(currRoot)
+  
+  if (prevIdx === -1 || currIdx === -1) return 0
+  
+  // Calculate Circle of Fifths distance
+  const circleOfFifths = [0, 7, 2, 9, 4, 11, 6, 1, 8, 3, 10, 5] // C, G, D, A, E, B, F#, C#, G#, D#, A#, F
+  const prevCirclePos = circleOfFifths.indexOf(prevIdx)
+  const currCirclePos = circleOfFifths.indexOf(currIdx)
+  
+  if (prevCirclePos === -1 || currCirclePos === -1) return 0.5 // Unknown, medium surprise
+  
+  const distance = Math.abs(currCirclePos - prevCirclePos)
+  // Distance 0-1 = low surprise (0.2), 2-3 = medium (0.5), 4+ = high (0.8)
+  if (distance <= 1) return 0.2
+  if (distance <= 3) return 0.5
+  return 0.8
+}
+
+function detectSyncMoments(history: Array<{ time: number; spectralCentroid: number; chord: string }>): Array<{ time: number; strength: number }> {
+  const moments: Array<{ time: number; strength: number }> = []
+  const threshold = 0.7
+  
+  for (let i = 10; i < history.length - 10; i++) {
+    const sync = calculateInstantSync(history[i], history)
+    if (sync > threshold) {
+      moments.push({ time: history[i].time, strength: sync })
+    }
+  }
+  
+  return moments
+}
+
+function detectHarmonicSurprises(history: Array<{ time: number; chord: string }>): Array<{ time: number; chord: string; surprise: number }> {
+  const surprises: Array<{ time: number; chord: string; surprise: number }> = []
+  
+  for (let i = 1; i < history.length; i++) {
+    const prev = history[i - 1]
+    const curr = history[i]
+    
+    if (curr.chord !== prev.chord && curr.chord !== "---") {
+      const surprise = calculateChordSurprise(prev.chord, curr.chord)
+      if (surprise > 0.5) {
+        surprises.push({ time: curr.time, chord: curr.chord, surprise })
+      }
+    }
+  }
+  
+  return surprises
+}
+
+function detectTimbralEvents(history: Array<{ time: number; instrumentEnergies: Record<string, number> }>): Array<{ time: number; type: string; strength: number }> {
+  const events: Array<{ time: number; type: string; strength: number }> = []
+  const threshold = 0.3 // Energy threshold for event detection
+  
+  for (let i = 1; i < history.length; i++) {
+    const prev = history[i - 1]
+    const curr = history[i]
+    
+    const prevEnergies = Object.values(prev.instrumentEnergies || {}) as number[]
+    const currEnergies = Object.values(curr.instrumentEnergies || {}) as number[]
+    
+    if (prevEnergies.length === 0 || currEnergies.length === 0) continue
+    
+    const prevAvg = prevEnergies.reduce((sum, e) => sum + e, 0) / prevEnergies.length
+    const currAvg = currEnergies.reduce((sum, e) => sum + e, 0) / currEnergies.length
+    
+    const energyChange = Math.abs(currAvg - prevAvg)
+    
+    if (energyChange > threshold) {
+      events.push({
+        time: curr.time,
+        type: currAvg > prevAvg ? "convergence" : "divergence",
+        strength: energyChange,
+      })
+    }
+  }
+  
+  return events
+}
+
+function identifyStructuralBoundaries(history: Array<{ time: number; instrumentEnergies: Record<string, number> }>): Array<{ time: number; confidence: number }> {
+  const timbralEvents = detectTimbralEvents(history)
+  const boundaries: Array<{ time: number; confidence: number }> = []
+  
+  // Cluster timbral events that occur close together
+  const clusters: Array<Array<{ time: number; type: string; strength: number }>> = []
+  let currentCluster: Array<{ time: number; type: string; strength: number }> = []
+  
+  timbralEvents.forEach((event, idx) => {
+    if (idx === 0) {
+      currentCluster.push(event)
+    } else {
+      const prevEvent = timbralEvents[idx - 1]
+      if (event.time - prevEvent.time < 5) {
+        // Events within 5 seconds are in same cluster
+        currentCluster.push(event)
+      } else {
+        // New cluster
+        if (currentCluster.length > 0) {
+          clusters.push(currentCluster)
+        }
+        currentCluster = [event]
+      }
+    }
+  })
+  
+  if (currentCluster.length > 0) {
+    clusters.push(currentCluster)
+  }
+  
+  // Boundaries are at cluster centers
+  clusters.forEach(cluster => {
+    const avgTime = cluster.reduce((sum, e) => sum + e.time, 0) / cluster.length
+    const avgStrength = cluster.reduce((sum, e) => sum + e.strength, 0) / cluster.length
+    boundaries.push({ time: avgTime, confidence: avgStrength })
+  })
+  
+  return boundaries
 }
 
 function bufferToWave(abuffer: AudioBuffer, len: number): Blob {
@@ -766,7 +1089,7 @@ export const useAudioStore = create<AudioStore>((set, get) => ({
         }
         
         try {
-          const { analysisHistory, currentTime: audioTime, currentChord, chordDegree } = get()
+          const { analysisHistory, currentTime: audioTime, currentChord, chordDegree, predictability } = get()
           const lastRecordTime = analysisHistory.length > 0 ? analysisHistory[analysisHistory.length - 1].time : -1
           
           if (audioTime - lastRecordTime >= 0.5 && frequencyData && frequencyData.length > 0) {
@@ -793,6 +1116,24 @@ export const useAudioStore = create<AudioStore>((set, get) => ({
               instrumentEnergies[inst.name] = energy / (maxBin - minBin)
             })
             
+            // Calculate new metrics
+            const harmonicEnergy = calculateHarmonicEnergy({ chord: currentChord, chordDegree })
+            const timbralVariance = calculateTimbralVariance({ instrumentEnergies })
+            
+            // Create current sample for instant sync calculation
+            const currentSample = {
+              time: audioTime,
+              spectralCentroid,
+              chord: currentChord,
+              instrumentEnergies,
+            }
+            
+            // Calculate instant sync index (only if we have enough history)
+            let instantSyncIndex = 0
+            if (analysisHistory.length >= 10) {
+              instantSyncIndex = calculateInstantSync(currentSample, analysisHistory)
+            }
+            
             analysisHistory.push({
               time: audioTime,
               spectralCentroid,
@@ -804,6 +1145,10 @@ export const useAudioStore = create<AudioStore>((set, get) => ({
               tempo: rhythmMetrics.tempo,
               beatStrength: rhythmMetrics.beatStrength,
               instrumentEnergies,
+              instantSyncIndex,
+              harmonicEnergy,
+              timbralVariance,
+              predictability,
             })
             
             // Keep last 1000 samples (500 seconds at 0.5s intervals)
@@ -1258,6 +1603,316 @@ export const useAudioStore = create<AudioStore>((set, get) => ({
       })),
     }
     return JSON.stringify(data, null, 2)
+  },
+
+  exportComprehensiveAnalysis: () => {
+    const {
+      analysisHistory,
+      duration,
+      currentFileName,
+      predictability,
+      songKey,
+    } = get()
+
+    if (analysisHistory.length === 0) {
+      return {
+        metadata: {
+          fileName: currentFileName || "unknown",
+          duration: 0,
+          analyzedAt: new Date().toISOString(),
+        },
+        overallStatistics: {},
+        timeSeries: [],
+        patterns: {
+          syncMoments: [],
+          harmonicSurprises: [],
+          timbralEvents: [],
+          structuralBoundaries: [],
+        },
+        instrumentStatistics: {},
+        correlations: {},
+      }
+    }
+
+    // Calculate overall metrics
+    const syncIndex = calculateSyncIndex(analysisHistory)
+    const timbralSpread = calculateTimbralSpread(analysisHistory)
+    const harmonicRhythm = calculateHarmonicRhythm(analysisHistory)
+    const phaseLag = calculatePhaseLag(analysisHistory)
+
+    // Detect patterns
+    const syncMoments = detectSyncMoments(analysisHistory)
+    const harmonicSurprises = detectHarmonicSurprises(analysisHistory)
+    const timbralEvents = detectTimbralEvents(analysisHistory)
+    const structuralBoundaries = identifyStructuralBoundaries(analysisHistory)
+
+    // Calculate per-instrument statistics
+    const instrumentNames = ["Kick", "Snare", "Hi-Hat", "Bass", "Synth", "Vocal", "Guitar", "Piano"]
+    const instrumentStatistics: Record<string, any> = {}
+
+    instrumentNames.forEach(name => {
+      const energies = analysisHistory.map(h => h.instrumentEnergies[name] || 0)
+      const avgEnergy = energies.length > 0 ? energies.reduce((a, b) => a + b, 0) / energies.length : 0
+      const maxEnergy = energies.length > 0 ? Math.max(...energies) : 0
+      const variance = calculateVariance(energies)
+
+      instrumentStatistics[name] = {
+        avgEnergy: Number(avgEnergy.toFixed(3)),
+        peakEnergy: Number(maxEnergy.toFixed(3)),
+        variance: Number(variance.toFixed(3)),
+        activeTime: energies.filter(e => e > 0.3).length * 0.5, // seconds
+      }
+    })
+
+    // Calculate correlations
+    const syncIndices = analysisHistory.map(h => h.instantSyncIndex || 0)
+    const predictabilities = analysisHistory.map(h => h.predictability || 0)
+    const timbralVariances = analysisHistory.map(h => h.timbralVariance || 0)
+    const harmonicEnergies = analysisHistory.map(h => h.harmonicEnergy || 0)
+
+    const correlations = {
+      syncIndexPredictability: correlation(syncIndices, predictabilities),
+      timbralSpreadHarmonicComplexity: correlation(timbralVariances, harmonicEnergies),
+    }
+
+    // Format time-series data for graphs
+    const timeSeries = analysisHistory.map(h => ({
+      time: Number(h.time.toFixed(2)),
+      spectralCentroid: Number((h.spectralCentroid / 5000).toFixed(3)), // Normalized
+      harmonicEnergy: Number((h.harmonicEnergy || 0).toFixed(3)),
+      timbralVariance: Number((h.timbralVariance || 0).toFixed(3)),
+      syncIndex: Number((h.instantSyncIndex || 0).toFixed(3)),
+      predictability: Number((h.predictability || 0).toFixed(3)),
+      instrumentEnergies: Object.fromEntries(
+        instrumentNames.map(name => [name, Number((h.instrumentEnergies[name] || 0).toFixed(3))])
+      ),
+      chord: h.chord,
+      chordDegree: h.chordDegree,
+    }))
+
+    // Calculate harmonic complexity metrics
+    const chordChangeRate = harmonicRhythm
+    const keyStability = songKey !== "---" ? 1 : 0 // Simplified
+    const harmonicEntropy = harmonicSurprises.length / Math.max(1, analysisHistory.length) * 0.5
+
+    // Calculate genre classification (using the function we'll define)
+    const genreClassification = (() => {
+      const genreTemplates: Record<string, { syncIndex: [number, number]; harmonicRhythm: [number, number]; timbralSpread: [number, number]; predictability: [number, number] }> = {
+        "Electronic": {
+          syncIndex: [0.6, 0.9],
+          harmonicRhythm: [8, 20],
+          timbralSpread: [0.2, 0.5],
+          predictability: [0.6, 0.9],
+        },
+        "Rock": {
+          syncIndex: [0.4, 0.7],
+          harmonicRhythm: [4, 12],
+          timbralSpread: [0.3, 0.6],
+          predictability: [0.4, 0.7],
+        },
+        "Jazz": {
+          syncIndex: [0.2, 0.5],
+          harmonicRhythm: [12, 30],
+          timbralSpread: [0.4, 0.7],
+          predictability: [0.2, 0.5],
+        },
+        "Pop": {
+          syncIndex: [0.5, 0.8],
+          harmonicRhythm: [6, 15],
+          timbralSpread: [0.2, 0.4],
+          predictability: [0.5, 0.8],
+        },
+        "Classical": {
+          syncIndex: [0.3, 0.6],
+          harmonicRhythm: [2, 8],
+          timbralSpread: [0.5, 0.8],
+          predictability: [0.3, 0.6],
+        },
+      }
+
+      const stats = {
+        syncIndex,
+        harmonicRhythm,
+        timbralSpread,
+        predictability,
+      }
+
+      let bestMatch = "Unknown"
+      let bestScore = 0
+
+      Object.entries(genreTemplates).forEach(([genre, template]) => {
+        let score = 0
+        let matches = 0
+
+        if (stats.syncIndex >= template.syncIndex[0] && stats.syncIndex <= template.syncIndex[1]) {
+          score += 1
+          matches++
+        }
+        if (stats.harmonicRhythm >= template.harmonicRhythm[0] && stats.harmonicRhythm <= template.harmonicRhythm[1]) {
+          score += 1
+          matches++
+        }
+        if (stats.timbralSpread >= template.timbralSpread[0] && stats.timbralSpread <= template.timbralSpread[1]) {
+          score += 1
+          matches++
+        }
+        if (stats.predictability >= template.predictability[0] && stats.predictability <= template.predictability[1]) {
+          score += 1
+          matches++
+        }
+
+        const finalScore = matches > 0 ? score / matches : 0
+        if (finalScore > bestScore) {
+          bestScore = finalScore
+          bestMatch = genre
+        }
+      })
+
+      return { genre: bestMatch, confidence: Number(bestScore.toFixed(3)) }
+    })()
+
+    return {
+      metadata: {
+        fileName: currentFileName || "unknown",
+        duration: Number(duration.toFixed(2)),
+        analyzedAt: new Date().toISOString(),
+        sampleCount: analysisHistory.length,
+        sampleInterval: 0.5,
+      },
+      overallStatistics: {
+        syncIndex: Number(syncIndex.toFixed(3)),
+        timbralSpread: Number(timbralSpread.toFixed(3)),
+        harmonicRhythm: Number(harmonicRhythm.toFixed(2)),
+        phaseLag: Number(phaseLag.toFixed(2)),
+        predictability: Number(predictability.toFixed(3)),
+        songKey,
+        chordChangeRate: Number(chordChangeRate.toFixed(2)),
+        keyStability: Number(keyStability.toFixed(2)),
+        harmonicEntropy: Number(harmonicEntropy.toFixed(3)),
+        syncMomentsCount: syncMoments.length,
+        harmonicSurprisesCount: harmonicSurprises.length,
+        timbralEventsCount: timbralEvents.length,
+        structuralBoundariesCount: structuralBoundaries.length,
+      },
+      timeSeries,
+      patterns: {
+        syncMoments: syncMoments.map(m => ({
+          time: Number(m.time.toFixed(2)),
+          strength: Number(m.strength.toFixed(3)),
+        })),
+        harmonicSurprises: harmonicSurprises.map(s => ({
+          time: Number(s.time.toFixed(2)),
+          chord: s.chord,
+          surprise: Number(s.surprise.toFixed(3)),
+        })),
+        timbralEvents: timbralEvents.map(e => ({
+          time: Number(e.time.toFixed(2)),
+          type: e.type,
+          strength: Number(e.strength.toFixed(3)),
+        })),
+        structuralBoundaries: structuralBoundaries.map(b => ({
+          time: Number(b.time.toFixed(2)),
+          confidence: Number(b.confidence.toFixed(3)),
+        })),
+      },
+      instrumentStatistics,
+      correlations: {
+        syncIndexPredictability: Number(correlations.syncIndexPredictability.toFixed(3)),
+        timbralSpreadHarmonicComplexity: Number(correlations.timbralSpreadHarmonicComplexity.toFixed(3)),
+      },
+      genreClassification,
+    }
+  },
+
+  classifyGenre: (analysisData?: any) => {
+    const data = analysisData || exportComprehensiveAnalysis()
+    if (!data || !data.overallStatistics) return { genre: "Unknown", confidence: 0, signature: {} }
+
+    const stats = data.overallStatistics
+
+    // Genre signature templates (simplified)
+    const genreTemplates: Record<string, { syncIndex: [number, number]; harmonicRhythm: [number, number]; timbralSpread: [number, number]; predictability: [number, number] }> = {
+      "Electronic": {
+        syncIndex: [0.6, 0.9],
+        harmonicRhythm: [8, 20],
+        timbralSpread: [0.2, 0.5],
+        predictability: [0.6, 0.9],
+      },
+      "Rock": {
+        syncIndex: [0.4, 0.7],
+        harmonicRhythm: [4, 12],
+        timbralSpread: [0.3, 0.6],
+        predictability: [0.4, 0.7],
+      },
+      "Jazz": {
+        syncIndex: [0.2, 0.5],
+        harmonicRhythm: [12, 30],
+        timbralSpread: [0.4, 0.7],
+        predictability: [0.2, 0.5],
+      },
+      "Pop": {
+        syncIndex: [0.5, 0.8],
+        harmonicRhythm: [6, 15],
+        timbralSpread: [0.2, 0.4],
+        predictability: [0.5, 0.8],
+      },
+      "Classical": {
+        syncIndex: [0.3, 0.6],
+        harmonicRhythm: [2, 8],
+        timbralSpread: [0.5, 0.8],
+        predictability: [0.3, 0.6],
+      },
+    }
+
+    let bestMatch = "Unknown"
+    let bestScore = 0
+
+    Object.entries(genreTemplates).forEach(([genre, template]) => {
+      let score = 0
+      let matches = 0
+
+      // Check sync index
+      if (stats.syncIndex >= template.syncIndex[0] && stats.syncIndex <= template.syncIndex[1]) {
+        score += 1
+        matches++
+      }
+
+      // Check harmonic rhythm
+      if (stats.harmonicRhythm >= template.harmonicRhythm[0] && stats.harmonicRhythm <= template.harmonicRhythm[1]) {
+        score += 1
+        matches++
+      }
+
+      // Check timbral spread
+      if (stats.timbralSpread >= template.timbralSpread[0] && stats.timbralSpread <= template.timbralSpread[1]) {
+        score += 1
+        matches++
+      }
+
+      // Check predictability
+      if (stats.predictability >= template.predictability[0] && stats.predictability <= template.predictability[1]) {
+        score += 1
+        matches++
+      }
+
+      const finalScore = matches > 0 ? score / matches : 0
+
+      if (finalScore > bestScore) {
+        bestScore = finalScore
+        bestMatch = genre
+      }
+    })
+
+    return {
+      genre: bestMatch,
+      confidence: Number(bestScore.toFixed(3)),
+      signature: {
+        syncIndex: stats.syncIndex,
+        harmonicRhythm: stats.harmonicRhythm,
+        timbralSpread: stats.timbralSpread,
+        predictability: stats.predictability,
+      },
+    }
   },
 
   transcribeLyrics: async () => {

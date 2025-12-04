@@ -25,6 +25,8 @@ import { useToast } from "@/hooks/use-toast"
 import EQControls from "./eq-controls"
 import AdvancedControls from "./advanced-controls"
 import InstrumentVisualizer from "./instrument-visualizer"
+import AnalyticsDashboard from "./analytics-dashboard"
+import { generateHTMLReport } from "@/lib/report-generator"
 
 function formatTime(seconds: number): string {
   if (!isFinite(seconds) || isNaN(seconds)) return "0:00"
@@ -38,6 +40,7 @@ export default function AudioControls() {
   const [isLoading, setIsLoading] = useState(false)
   const [pendingSeek, setPendingSeek] = useState<number | null>(null)
   const [isInfoOpen, setIsInfoOpen] = useState(false)
+  const [isAnalyticsOpen, setIsAnalyticsOpen] = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const lyricsInputRef = useRef<HTMLInputElement>(null)
   const stemsInputRef = useRef<HTMLInputElement>(null)
@@ -76,6 +79,7 @@ export default function AudioControls() {
     toggleStem,
     setStemVolume,
     exportTimbreData,
+    exportComprehensiveAnalysis,
     seekTo,
     replay,
   } = useAudioStore()
@@ -155,30 +159,80 @@ export default function AudioControls() {
   const handleExportCSV = () => {
     const state = useAudioStore.getState()
     const data = JSON.parse(exportTimbreData())
+    const comprehensiveData = exportComprehensiveAnalysis()
     
     // Create CSV header
-    let csv = "Time,Instrument,AvgEnergy,PeakEnergy,ActiveTime,SpectralCentroid,Roughness,Tempo,Chord,ChordDegree,Key\n"
+    let csv = "=== OVERALL STATISTICS ===\n"
+    csv += "Metric,Value\n"
+    csv += `Sync Index,${comprehensiveData.overallStatistics.syncIndex?.toFixed(3) || 'N/A'}\n`
+    csv += `Timbral Spread,${comprehensiveData.overallStatistics.timbralSpread?.toFixed(3) || 'N/A'}\n`
+    csv += `Harmonic Rhythm,${comprehensiveData.overallStatistics.harmonicRhythm?.toFixed(2) || 'N/A'}\n`
+    csv += `Phase Lag,${comprehensiveData.overallStatistics.phaseLag?.toFixed(2) || 'N/A'}\n`
+    csv += `Predictability,${comprehensiveData.overallStatistics.predictability?.toFixed(3) || 'N/A'}\n`
+    csv += `Sync Moments Count,${comprehensiveData.overallStatistics.syncMomentsCount || 0}\n`
+    csv += `Harmonic Surprises Count,${comprehensiveData.overallStatistics.harmonicSurprisesCount || 0}\n`
+    csv += `Timbral Events Count,${comprehensiveData.overallStatistics.timbralEventsCount || 0}\n`
+    csv += `Structural Boundaries Count,${comprehensiveData.overallStatistics.structuralBoundariesCount || 0}\n`
+    
+    csv += "\n\n=== PER-INSTRUMENT STATISTICS ===\n"
+    csv += "Instrument,AvgEnergy,PeakEnergy,Variance,ActiveTime\n"
     
     // Add per-instrument statistics
     if (data.instruments && data.instruments.length > 0) {
       data.instruments.forEach((inst: any) => {
-        csv += `"Full Song","${inst.name}",${inst.statistics.avgEnergy},${inst.statistics.peakEnergy},${inst.statistics.totalActiveTime},${data.overallStatistics.avgSpectralCentroid},${data.overallStatistics.avgRoughness},${data.overallStatistics.avgTempo},"${data.overallStatistics.songKey}","","${data.overallStatistics.songKey}"\n`
+        const compStats = comprehensiveData.instrumentStatistics[inst.name]
+        csv += `"${inst.name}",${inst.statistics.avgEnergy},${inst.statistics.peakEnergy},${compStats?.variance?.toFixed(3) || 'N/A'},${compStats?.activeTime?.toFixed(1) || 'N/A'}\n`
       })
     }
     
-    // Add time-series data for each instrument
-    csv += "\n\nTime Series Data\n"
-    csv += "Time,Instrument,Energy\n"
+    csv += "\n\n=== TIME-SERIES DATA ===\n"
+    csv += "Time,SpectralCentroid,HarmonicEnergy,TimbralVariance,SyncIndex,Predictability,Chord,ChordDegree"
     
-    if (data.instruments && data.instruments.length > 0) {
-      data.instruments.forEach((inst: any) => {
-        if (inst.timeSeries && inst.timeSeries.length > 0) {
-          inst.timeSeries.forEach((sample: any) => {
-            csv += `${sample.time},"${inst.name}",${sample.energy}\n`
-          })
-        }
+    // Add instrument columns
+    const instrumentNames = Object.keys(comprehensiveData.instrumentStatistics)
+    instrumentNames.forEach(name => {
+      csv += `,${name}Energy`
+    })
+    csv += "\n"
+    
+    // Add time-series data
+    if (comprehensiveData.timeSeries && comprehensiveData.timeSeries.length > 0) {
+      comprehensiveData.timeSeries.forEach((sample: any) => {
+        csv += `${sample.time},${sample.spectralCentroid},${sample.harmonicEnergy},${sample.timbralVariance},${sample.syncIndex},${sample.predictability},"${sample.chord}","${sample.chordDegree}"`
+        instrumentNames.forEach(name => {
+          csv += `,${sample.instrumentEnergies[name] || 0}`
+        })
+        csv += "\n"
       })
     }
+    
+    csv += "\n\n=== PATTERN DETECTION RESULTS ===\n"
+    csv += "Type,Time,Details\n"
+    
+    // Sync moments
+    comprehensiveData.patterns.syncMoments.forEach((m: any) => {
+      csv += `Sync Moment,${m.time},"Strength: ${m.strength.toFixed(3)}"\n`
+    })
+    
+    // Harmonic surprises
+    comprehensiveData.patterns.harmonicSurprises.forEach((s: any) => {
+      csv += `Harmonic Surprise,${s.time},"Chord: ${s.chord}, Surprise: ${s.surprise.toFixed(3)}"\n`
+    })
+    
+    // Timbral events
+    comprehensiveData.patterns.timbralEvents.forEach((e: any) => {
+      csv += `Timbral Event,${e.time},"Type: ${e.type}, Strength: ${e.strength.toFixed(3)}"\n`
+    })
+    
+    // Structural boundaries
+    comprehensiveData.patterns.structuralBoundaries.forEach((b: any) => {
+      csv += `Structural Boundary,${b.time},"Confidence: ${b.confidence.toFixed(3)}"\n`
+    })
+    
+    csv += "\n\n=== CORRELATIONS ===\n"
+    csv += "Metric Pair,Correlation\n"
+    csv += `Sync Index ↔ Predictability,${comprehensiveData.correlations.syncIndexPredictability?.toFixed(3) || 'N/A'}\n`
+    csv += `Timbral Spread ↔ Harmonic Complexity,${comprehensiveData.correlations.timbralSpreadHarmonicComplexity?.toFixed(3) || 'N/A'}\n`
     
     // Add chord progression
     csv += "\n\nChord Progression\n"
@@ -202,6 +256,33 @@ export default function AudioControls() {
       title: "Data Exported",
       description: "Comprehensive timbre analysis data has been downloaded as CSV.",
     })
+  }
+
+  const handleExportAnalyticsReport = () => {
+    try {
+      const analysisData = exportComprehensiveAnalysis()
+      const html = generateHTMLReport(analysisData)
+      
+      const blob = new Blob([html], { type: "text/html" })
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement("a")
+      a.href = url
+      a.download = `analytics-report-${Date.now()}.html`
+      a.click()
+      URL.revokeObjectURL(url)
+
+      toast({
+        title: "Analytics report exported",
+        description: "HTML report with visualizations generated successfully",
+      })
+    } catch (error) {
+      console.error("[v0] Error exporting analytics report:", error)
+      toast({
+        title: "Export failed",
+        description: "Could not generate analytics report",
+        variant: "destructive",
+      })
+    }
   }
 
   const handleTranscribe = async () => {
@@ -585,6 +666,26 @@ export default function AudioControls() {
                       <Download className="h-3 w-3 mr-1" />
                       CSV
                     </Button>
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      onClick={() => setIsAnalyticsOpen(true)}
+                      className="h-7 px-2 text-xs"
+                      title="Open Analytics Dashboard"
+                    >
+                      <Info className="h-3 w-3 mr-1" />
+                      Analytics
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      onClick={handleExportAnalyticsReport}
+                      className="h-7 px-2 text-xs"
+                      title="Export Analytics Report (HTML)"
+                    >
+                      <Download className="h-3 w-3 mr-1" />
+                      Report
+                    </Button>
                   </div>
                 </div>
 
@@ -764,6 +865,27 @@ export default function AudioControls() {
           </Card>
         </div>
       </div>
+
+      {/* Analytics Dashboard Modal */}
+      {isAnalyticsOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
+          <div className="bg-background rounded-lg shadow-lg w-[95vw] h-[90vh] overflow-hidden flex flex-col">
+            <div className="flex justify-end p-4 border-b">
+              <Button
+                size="icon"
+                variant="ghost"
+                onClick={() => setIsAnalyticsOpen(false)}
+                className="h-8 w-8"
+              >
+                <X className="h-4 w-4" />
+              </Button>
+            </div>
+            <div className="flex-1 overflow-auto">
+              <AnalyticsDashboard onClose={() => setIsAnalyticsOpen(false)} />
+            </div>
+          </div>
+        </div>
+      )}
     </>
   )
 }
