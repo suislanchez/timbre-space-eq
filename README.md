@@ -1,30 +1,3 @@
 # Timbre Space EQ
 
-*Automatically synced with your [v0.app](https://v0.app) deployments*
-
-[![Deployed on Vercel](https://img.shields.io/badge/Deployed%20on-Vercel-black?style=for-the-badge&logo=vercel)](https://vercel.com/suislanchezs-projects/v0-timbre-space-eq)
-[![Built with v0](https://img.shields.io/badge/Built%20with-v0.app-black?style=for-the-badge)](https://v0.app/chat/lZfrUamjyKh)
-
-## Overview
-
-This repository will stay in sync with your deployed chats on [v0.app](https://v0.app).
-Any changes you make to your deployed app will be automatically pushed to this repository from [v0.app](https://v0.app).
-
-## Deployment
-
-Your project is live at:
-
-**[https://vercel.com/suislanchezs-projects/v0-timbre-space-eq](https://vercel.com/suislanchezs-projects/v0-timbre-space-eq)**
-
-## Build your app
-
-Continue building your app on:
-
-**[https://v0.app/chat/lZfrUamjyKh](https://v0.app/chat/lZfrUamjyKh)**
-
-## How It Works
-
-1. Create and modify your project using [v0.app](https://v0.app)
-2. Deploy your chats from the v0 interface
-3. Changes are automatically pushed to this repository
-4. Vercel deploys the latest version from this repository
+Musical expectation and structural tension play a fundamental role in how listeners perceive, anticipate, and emotionally respond to music. Despite their importance, these phenomena are typically treated as latent cognitive processes that can only be inferred indirectly through behavioral experiments or offline analytical methods. Existing music analysis tools often separate harmony and timbre, rely on symbolic representations, or operate as opaque computational models that obscure perceptually meaningful structure. This paper presents a real-time analytical system that makes musical expectation observable by jointly visualizing timbral motion and harmonic predictability within a shared perceptual space. The system employs interpretable FFT-based timbral features and a first-order Markov model of chord transitions to externalize moment-to-moment dynamics of anticipation, tension, and release as music unfolds. In addition, the system produces structured, time-aligned representations of timbral trajectories and harmonic context that can be exported as datasets. These representations provide a foundation for future machine learning research by capturing perceptually meaningful timbral structure that is largely absent from existing generative music training data. The system thus functions both as a research instrument for music perception and cognition and as a data-generation framework for future computational modeling of musical structure.
