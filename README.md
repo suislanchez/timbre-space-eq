@@ -1,5 +1,5 @@
 # Timbre Space EQ
-[3 tools called]
+
 <img width="1299" height="837" alt="3d_eq" src="https://github.com/user-attachments/assets/35c0368b-094a-4df3-873d-03a7131453fd" />
 
 
